@@ -1,0 +1,22 @@
+{
+  "checks" : [
+    "invalid file rejection without phantom recordings or partial files",
+    "completed 16 kHz WAV file batch-transcribed with local Whisper large-v3-turbo",
+    "real Codex text correction through the existing ChatGPT login",
+    "source text, segment identities and STT timestamps preserved through text correction",
+    "beginning and end of the recording retained with ordered, bounded intervals",
+    "audio decoding, bounded waveform, playback clock, speed, sentence repeat including EOF, seeking and bookmarks",
+    "failed disk writes preserve edits, prevent quitting, and recover on retry",
+    "folder move and complete reload from disk",
+    "subtitle export"
+  ],
+  "duration" : 27.105625,
+  "model" : "ggml-large-v3-turbo.bin",
+  "passed" : true,
+  "processingSeconds" : 17.561808708356693,
+  "scope" : "batch-file-transcription-and-local-library",
+  "segments" : 7,
+  "syntheticAudio" : true,
+  "textCorrection" : "codex-chatgpt",
+  "timing" : "whisper-segment-timestamps"
+}

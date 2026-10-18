@@ -1,0 +1,16 @@
+#!/bin/bash
+set -euo pipefail
+repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$repo_dir"
+configuration="${1:-release}"
+swift build -c "$configuration"
+bin_dir="$(swift build -c "$configuration" --show-bin-path)"
+app_dir="$repo_dir/dist/둥둥이.app"
+mkdir -p "$app_dir/Contents/MacOS" "$app_dir/Contents/Resources"
+cp "$bin_dir/BungBungi" "$app_dir/Contents/MacOS/BungBungi"
+cp packaging/Info.plist "$app_dir/Contents/Info.plist"
+rm -rf "$app_dir/Contents/Resources/Sori_SoriApp.bundle" "$app_dir/Contents/Helpers/BungBungiAudio"
+ditto "$bin_dir/Sori_SoriApp.bundle" "$app_dir/Contents/Resources/Sori_SoriApp.bundle"
+./scripts/build-brand.sh "$app_dir/Contents/Resources"
+codesign --force --deep --sign - "$app_dir"
+echo "$app_dir"

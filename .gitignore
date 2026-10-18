@@ -1,0 +1,27 @@
+.build/
+.local/
+dist/
+.DS_Store
+*.xcuserstate
+*.xcuserdata/
+
+# Local credentials, user recordings and downloaded models
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.p8
+*.mobileprovision
+Models/
+recordings/
+audio.wav
+recording.json
+auth.json
+__pycache__/
+*.pyc
+.venv/
+
+# Historical local screen captures
+docs/*.png
