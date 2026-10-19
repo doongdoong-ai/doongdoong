@@ -8,7 +8,8 @@ let package = Package(
     targets: [
         .target(name: "SoriCore"),
         .executableTarget(name: "SoriApp", dependencies: ["SoriCore"], resources: [.copy("Resources")]),
-        .testTarget(name: "SoriCoreTests", dependencies: ["SoriCore"])
+        .testTarget(name: "SoriCoreTests", dependencies: ["SoriCore"]),
+        .testTarget(name: "SoriPipelineTests", dependencies: ["SoriApp", "SoriCore"])
     ],
     swiftLanguageModes: [.v5]
 )

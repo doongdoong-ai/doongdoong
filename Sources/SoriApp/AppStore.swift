@@ -315,7 +315,17 @@ final class AppStore {
                     return
                 }
                 self.progressDetail = "AI가 녹음을 정리하고 있어요"
-                let result = try await TranscriptionPipeline.transcribe(audio: audio, directory: directory, duration: info.duration, settings: snapshot)
+                let result = try await TranscriptionPipeline.transcribe(
+                    audio: audio, directory: directory, duration: info.duration, settings: snapshot,
+                    onTranscribed: { segments in
+                        // Keep any previous user edits until a complete replacement is ready.
+                        guard self.update(id, {
+                            if $0.segments.isEmpty { $0.segments = segments }
+                            $0.status = .polishing
+                        }) else {
+                            throw SoriError.message("전사문을 저장하지 못했습니다. 저장 공간을 확인한 뒤 다시 시도해 주세요.")
+                        }
+                    })
                 try Task.checkCancellation()
                 switch result {
                 case .noSpeech:

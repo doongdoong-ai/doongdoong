@@ -115,7 +115,12 @@ public enum Transcript {
             }
             let transcription: [Segment]
         }
-        let decoded = try JSONDecoder().decode(Output.self, from: data)
+        // whisper.cpp can emit an incomplete UTF-8 sequence in a segment (or a
+        // token in older full-JSON outputs). Replace only malformed sequences with
+        // U+FFFD; never guess missing speech, discard a segment, or relax JSON syntax.
+        let json = String(data: data, encoding: .utf8) == nil
+            ? Data(String(decoding: data, as: UTF8.self).utf8) : data
+        let decoded = try JSONDecoder().decode(Output.self, from: json)
         var result: [TranscriptSegment] = []
         for item in decoded.transcription {
             let text = item.text.trimmingCharacters(in: .whitespacesAndNewlines)

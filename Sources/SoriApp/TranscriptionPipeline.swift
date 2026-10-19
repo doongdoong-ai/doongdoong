@@ -58,7 +58,8 @@ enum TranscriptionPipeline {
     ]
 
     static func transcribe(audio: URL, directory: URL, duration: Double,
-                           settings: PipelineSettings) async throws -> TranscriptionResult {
+                           settings: PipelineSettings,
+                           onTranscribed: (([TranscriptSegment]) throws -> Void)? = nil) async throws -> TranscriptionResult {
         try Task.checkCancellation()
         let temporary = FileManager.default.temporaryDirectory
             .appendingPathComponent("bungbungi-transcription-\(UUID().uuidString)", isDirectory: true)
@@ -77,14 +78,15 @@ enum TranscriptionPipeline {
                 executable: URL(fileURLWithPath: settings.whisper),
                 arguments: ["-m", settings.model, "-f", audio.path, "-l", settings.language,
                             "--vad", "--vad-model", settings.vadModel,
-                            "-ojf", "-of", output.path, "-ml", "90", "-sow", "-t", "4", "-np"],
+                            "-oj", "-of", output.path, "-ml", "90", "-sow", "-t", "4", "-np"],
                 directory: temporary, log: temporary.appendingPathComponent("transcription.log"),
                 timeout: min(86_400, max(300, duration * 4)))
             try Task.checkCancellation()
             let data = try boundedData(at: output.appendingPathExtension("json"), maximumBytes: 64 * 1024 * 1024)
-            original = try Transcript.parseWhisper(data, duration: duration)
-            // The exact timestamp-bearing source is durable before any network processing.
+            // Persist even malformed CLI output so a parser failure does not discard
+            // an hour-long recognition job. Token-level JSON is unnecessary here (-oj).
             try data.write(to: directory.appendingPathComponent("whisper-original.json"), options: .atomic)
+            original = try Transcript.parseWhisper(data, duration: duration)
             // VAD runs before decoding and leaves no segments when no speech is found.
             // Segment offsets already map back to the original recording timeline.
             if original.isEmpty {
@@ -93,7 +95,7 @@ enum TranscriptionPipeline {
                     let transcription: [Entry]
                 }
                 // Invalid or out-of-range timestamps are a processing failure, not silence.
-                guard try JSONDecoder().decode(Output.self, from: data).transcription.isEmpty else {
+                guard try JSONDecoder().decode(Output.self, from: Data(String(decoding: data, as: UTF8.self).utf8)).transcription.isEmpty else {
                     throw SoriError.message("No usable transcript segments")
                 }
                 diagnostics(directory: directory, phase: "transcription", outcome: "no-speech")
@@ -105,6 +107,9 @@ enum TranscriptionPipeline {
             throw SoriError.message(transcriptionFailure)
         }
 
+        // Publish the local transcript before potentially lengthy network work. An app
+        // restart or interrupted correction must not hide already recognized speech.
+        try onTranscribed?(original)
         do {
             try Task.checkCancellation()
             try await checkLogin(settings: settings, directory: temporary)
@@ -268,7 +273,23 @@ enum TranscriptionPipeline {
             fields["requestedModel"] = correctionModel
             fields["requestedReasoningEffort"] = correctionReasoningEffort
         }
-        if let error { fields["errorType"] = String(reflecting: type(of: error)) }
+        if let error {
+            fields["errorType"] = String(reflecting: type(of: error))
+            // Record structure, never transcript strings or arbitrary process output.
+            if let decoding = error as? DecodingError {
+                let kind: String
+                let context: DecodingError.Context
+                switch decoding {
+                case .dataCorrupted(let value): kind = "dataCorrupted"; context = value
+                case .keyNotFound(_, let value): kind = "keyNotFound"; context = value
+                case .typeMismatch(_, let value): kind = "typeMismatch"; context = value
+                case .valueNotFound(_, let value): kind = "valueNotFound"; context = value
+                @unknown default: kind = "unknown"; context = .init(codingPath: [], debugDescription: "")
+                }
+                fields["decodingKind"] = kind
+                fields["decodingPath"] = context.codingPath.map(\.stringValue)
+            }
+        }
         if let chunks { fields["chunks"] = chunks }
         if let data = try? JSONSerialization.data(withJSONObject: fields, options: [.prettyPrinted, .sortedKeys]) {
             try? data.write(to: directory.appendingPathComponent("processing.json"), options: .atomic)
