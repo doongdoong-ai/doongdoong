@@ -461,7 +461,7 @@ final class AppStore {
     }
     func copyTranscript() {
         guard let selected else { return }
-        NSPasteboard.general.clearContents(); NSPasteboard.general.setString(selected.fullText, forType: .string)
+        NSPasteboard.general.clearContents(); NSPasteboard.general.setString(selected.segments.map { showOriginal ? $0.originalText : $0.text }.joined(separator: "\n"), forType: .string)
         notify("전사문을 복사했습니다")
     }
     func notify(_ message: String) {

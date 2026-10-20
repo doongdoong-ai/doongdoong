@@ -3,7 +3,7 @@ import SoriCore
 
 struct ContentView: View {
     @Bindable var store: AppStore
-    var readingMode = true
+    var transcriptVisible = false
     var searchVisible = false
     @State private var dropTarget = false
 
@@ -17,7 +17,7 @@ struct ContentView: View {
                     Rectangle().fill(SoriTheme.line).frame(width: 1)
                 }
                 Group {
-                    if let selected = store.selected { RecordingDetailView(store: store, recording: selected, readingMode: readingMode, searchVisible: searchVisible) }
+                    if let selected = store.selected { RecordingDetailView(store: store, recording: selected, transcriptVisible: transcriptVisible, searchVisible: searchVisible) }
                     else { WelcomeView(store: store) }
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)
             }

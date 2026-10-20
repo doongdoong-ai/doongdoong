@@ -8,6 +8,7 @@ struct LectureNotesView: View {
     let canPlay: Bool
     let generate: () -> Void
     let play: (TranscriptSegment) -> Void
+    let copied: () -> Void
 
     var body: some View {
         ScrollView {
@@ -20,9 +21,13 @@ struct LectureNotesView: View {
                                 .font(.system(size: 14)).foregroundStyle(SoriTheme.secondary).lineSpacing(4)
                         }
                         Spacer(minLength: 0)
-                        Button("다시 정리") { generate() }
-                            .font(.system(size: 13)).buttonStyle(.plain).foregroundStyle(SoriTheme.secondary)
-                            .disabled(!canGenerate).padding(.top, 5)
+                        HStack(spacing: 14) {
+                            Button {
+                                copyHighlights(([recording.title] + highlights.map(\.copyText)).joined(separator: "\n\n"))
+                            } label: { Image(systemName: "doc.on.doc").frame(width: 28, height: 28) }
+                                .disabled(highlights.isEmpty).help("핵심 요약 전체 복사").accessibilityLabel("핵심 요약 전체 복사")
+                            Button("다시 정리") { generate() }.disabled(!canGenerate)
+                        }.font(.system(size: 13)).buttonStyle(.plain).foregroundStyle(SoriTheme.secondary)
                     }
                     if highlights.isEmpty {
                         VStack(alignment: .leading, spacing: 10) {
@@ -34,7 +39,7 @@ struct LectureNotesView: View {
                     } else {
                         LazyVStack(spacing: 16) {
                             ForEach(highlights) { card in
-                                LectureHighlightCard(card: card, segments: recording.segments, canPlay: canPlay, play: play)
+                                LectureHighlightCard(card: card, segments: recording.segments, canPlay: canPlay, play: play, copy: { copyHighlights(card.copyText) })
                             }
                         }
                     }
@@ -61,6 +66,12 @@ struct LectureNotesView: View {
                 .frame(maxWidth: .infinity, alignment: .center)
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
     }
+    private func copyHighlights(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        copied()
+    }
+
 }
 
 private struct LectureHighlightCard: View {
@@ -68,6 +79,7 @@ private struct LectureHighlightCard: View {
     let segments: [TranscriptSegment]
     let canPlay: Bool
     let play: (TranscriptSegment) -> Void
+    let copy: () -> Void
     @State private var showEvidence = false
 
     private var firstSource: TranscriptSegment? {
@@ -76,12 +88,15 @@ private struct LectureHighlightCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(card.signal == .explicit ? "직접 강조한 내용" : "반복해서 설명한 내용")
-                .font(.system(size: 13, weight: .medium)).foregroundStyle(SoriTheme.secondary)
-            Text(card.heading).font(.system(size: 19, weight: .semibold)).tracking(-0.25)
-                .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
-            Text(card.summary).font(.system(size: 15)).lineSpacing(6)
-                .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+            HStack {
+                Text(card.signal == .explicit ? "직접 강조한 내용" : "반복해서 설명한 내용")
+                    .font(.system(size: 13, weight: .medium)).foregroundStyle(SoriTheme.secondary)
+                Spacer()
+                Button(action: copy) { Image(systemName: "doc.on.doc").frame(width: 28, height: 28) }
+                    .buttonStyle(.plain).foregroundStyle(SoriTheme.secondary)
+                    .help("카드 복사").accessibilityLabel("\(card.heading) 카드 복사")
+            }
+            SelectableCardText(text: card.attributedText)
             HStack(spacing: 18) {
                 if let source = firstSource {
                     Button { play(source) } label: {
@@ -103,8 +118,7 @@ private struct LectureHighlightCard: View {
                 VStack(alignment: .leading, spacing: 16) {
                     ForEach(card.evidence.sorted { $0.segmentID < $1.segmentID }) { evidence in
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("“\(evidence.quote)”").font(.system(size: 14)).lineSpacing(5)
-                                .foregroundStyle(SoriTheme.secondary).textSelection(.enabled)
+                            SelectableCardText(text: LectureHighlight.quoteText(evidence.quote))
                             if let source = segments.first(where: { $0.id == evidence.segmentID }) {
                                 Button("\(TimeText.clock(source.start))에서 확인") { play(source) }
                                     .font(.system(size: 13)).buttonStyle(.plain).disabled(!canPlay)
@@ -117,5 +131,30 @@ private struct LectureHighlightCard: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(Color.white.opacity(0.7), in: RoundedRectangle(cornerRadius: 12))
             .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(SoriTheme.line, lineWidth: 1).allowsHitTesting(false))
+    }
+}
+
+extension LectureHighlight {
+    var copyText: String { heading + "\n" + summary }
+
+    var attributedText: NSAttributedString {
+        let result = NSMutableAttributedString()
+        let headingStyle = NSMutableParagraphStyle(); headingStyle.paragraphSpacing = 12
+        result.append(NSAttributedString(string: heading + "\n", attributes: [
+            .font: NSFont.systemFont(ofSize: 19, weight: .semibold),
+            .foregroundColor: NSColor(SoriTheme.ink), .paragraphStyle: headingStyle
+        ]))
+        let bodyStyle = NSMutableParagraphStyle(); bodyStyle.lineSpacing = 6
+        result.append(NSAttributedString(string: summary, attributes: [
+            .font: NSFont.systemFont(ofSize: 15), .foregroundColor: NSColor(SoriTheme.ink), .paragraphStyle: bodyStyle
+        ]))
+        return result
+    }
+
+    static func quoteText(_ quote: String) -> NSAttributedString {
+        let style = NSMutableParagraphStyle(); style.lineSpacing = 5
+        return NSAttributedString(string: "“\(quote)”", attributes: [
+            .font: NSFont.systemFont(ofSize: 14), .foregroundColor: NSColor(SoriTheme.secondary), .paragraphStyle: style
+        ])
     }
 }
