@@ -94,7 +94,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             let search = args.contains("--search-preview") || args.contains("--empty-search-preview")
             if search { self.store.transcriptSearch = args.contains("--empty-search-preview") ? "일치하지 않는 검색어" : "녹음" }
             let size = settings ? NSSize(width: 600, height: 600) : NSSize(width: args.contains("--minimum-window") ? 1000 : 1280, height: args.contains("--minimum-window") ? 670 : 820)
-            let content = settings ? AnyView(SettingsView(store: self.store)) : AnyView(ContentView(store: self.store, readingMode: !args.contains("--transcript-preview"), searchVisible: search))
+            let content = settings ? AnyView(SettingsView(store: self.store)) : AnyView(ContentView(store: self.store, transcriptVisible: args.contains("--transcript-preview"), searchVisible: search))
             let view = NSHostingView(rootView: content.frame(width: size.width, height: size.height).environment(\.displayScale, 2).preferredColorScheme(.light).tint(SoriTheme.accent))
             view.appearance = NSAppearance(named: .aqua)
             view.frame = NSRect(origin: .zero, size: size)

@@ -4,7 +4,6 @@ import SoriCore
 struct RecordingDetailView: View {
     @Bindable var store: AppStore
     let recording: Recording
-    @State private var readingMode = true
     @State private var showLectureNotes = false
     @State private var editingSegment: SegmentEdit?
     @State private var editedText = ""
@@ -13,18 +12,15 @@ struct RecordingDetailView: View {
     @State private var showSearch = false
     @State private var searchFocusRequested = false
     @State private var selectedSearchID: Int?
-    @State private var textSize: Double = 32
+    @State private var textSize: Double = 22
     @State private var scrollRequest = 0
     @State private var searchScrollRequest = 0
     @FocusState private var searchFocused: Bool
-    @FocusState private var transcriptFocused: Bool
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    init(store: AppStore, recording: Recording, readingMode: Bool = true, searchVisible: Bool = false) {
+    init(store: AppStore, recording: Recording, transcriptVisible: Bool = false, searchVisible: Bool = false) {
         self.store = store
         self.recording = recording
-        _readingMode = State(initialValue: readingMode)
-        _showLectureNotes = State(initialValue: recording.lectureHighlights != nil && !searchVisible)
+        _showLectureNotes = State(initialValue: recording.lectureHighlights != nil && !searchVisible && !transcriptVisible)
         _showSearch = State(initialValue: searchVisible)
     }
 
@@ -71,11 +67,11 @@ struct RecordingDetailView: View {
                                  canGenerate: store.canOrganizeLecture(recording.id), canPlay: canPlay,
                                  generate: { store.enqueue(recording.id, lectureOnly: true) },
                                  play: { segment in
-                                     showLectureNotes = false; readingMode = true
+                                     showLectureNotes = false
                                      store.transcriptSearch = ""; showSearch = false
                                      store.followPlayback = true
                                      play(segment); scrollRequest += 1
-                                 })
+                                 }, copied: { store.notify("핵심 요약을 복사했습니다") })
             }
             else { transcript }
 
@@ -103,10 +99,6 @@ struct RecordingDetailView: View {
             searchFocusRequested = false
             selectedSearchID = nil
             searchFocused = false
-            transcriptFocused = false
-        }
-        .onChange(of: recording.generatedTitle) { old, new in
-            if old == nil, new != nil { showLectureNotes = true }
         }
         .onChange(of: matchingIDs, initial: true) { _, ids in
             if !ids.contains(selectedSearchID ?? -1) { selectedSearchID = ids.first }
@@ -142,14 +134,14 @@ struct RecordingDetailView: View {
                     Divider()
                     Toggle("원문 보기", isOn: $store.showOriginal).disabled(recording.segments.isEmpty)
                     Toggle("재생 중인 문장 따라가기", isOn: $store.followPlayback)
-                    Menu("따라 읽기 글자 크기") {
-                        ForEach([Double(28), 32, 38], id: \.self) { size in
+                    Menu("전사문 글자 크기") {
+                        ForEach([Double(18), 22, 28], id: \.self) { size in
                             Button { textSize = size } label: {
-                                Label(size == 28 ? "작게" : size == 32 ? "보통" : "크게", systemImage: textSize == size ? "checkmark" : "textformat.size")
+                                Label(size == 18 ? "작게" : size == 22 ? "보통" : "크게", systemImage: textSize == size ? "checkmark" : "textformat.size")
                             }
                         }
                     }
-                    Button("재생 위치로 이동") { showLectureNotes = false; scrollRequest += 1; transcriptFocused = true }.disabled(!canPlay || recording.segments.isEmpty)
+                    Button("재생 위치로 이동") { showLectureNotes = false; scrollRequest += 1 }.disabled(!canPlay || recording.segments.isEmpty)
                     Divider()
                     if !recording.status.isProcessing && recording.id != store.recordingID {
                         Button("다시 정리하기") { store.enqueue(recording.id) }.disabled(!store.canTranscribe(recording.id))
@@ -186,10 +178,22 @@ struct RecordingDetailView: View {
         HStack(spacing: 12) {
             HStack(spacing: 22) {
                 modeButton("핵심 요약", selected: showLectureNotes) { showLectureNotes = true; searchFocused = false }
-                modeButton("따라 읽기", selected: !showLectureNotes && readingMode) { showLectureNotes = false; readingMode = true }
-                modeButton("전사문", selected: !showLectureNotes && !readingMode) { showLectureNotes = false; readingMode = false }
+                modeButton("전사문", selected: !showLectureNotes) { showLectureNotes = false }
             }
             Spacer(minLength: 4)
+            if !showLectureNotes {
+                Button {
+                    store.followPlayback = true
+                    scrollRequest += 1
+                } label: { Image(systemName: "scope").font(.system(size: 16)).frame(width: 32, height: 34) }
+                    .buttonStyle(DetailControlStyle()).foregroundStyle(SoriTheme.secondary)
+                    .disabled(!canPlay || recording.segments.isEmpty)
+                    .help("재생 중인 문장으로 이동").accessibilityLabel("재생 중인 문장으로 이동")
+                Button { store.copyTranscript() } label: {
+                    Image(systemName: "doc.on.doc").font(.system(size: 15)).frame(width: 32, height: 34)
+                }.buttonStyle(DetailControlStyle()).foregroundStyle(SoriTheme.secondary)
+                    .disabled(recording.segments.isEmpty).help("전사문 전체 복사").accessibilityLabel("전사문 전체 복사")
+            }
             Button { openSearch() } label: { Image(systemName: "magnifyingglass").font(.system(size: 16)).frame(width: 32, height: 34).contentShape(Rectangle()) }
                 .buttonStyle(DetailControlStyle()).foregroundStyle(showSearch || !query.isEmpty ? SoriTheme.ink : SoriTheme.secondary).keyboardShortcut("f", modifiers: .command)
                 .help("전사문에서 찾기 · ⌘F").accessibilityLabel("전사문에서 찾기").disabled(recording.segments.isEmpty)
@@ -241,74 +245,20 @@ struct RecordingDetailView: View {
     private var transcript: some View {
         VStack(spacing: 0) {
             if showSearch { searchBar }
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: readingMode ? 22 : 7) {
-                        ForEach(recording.segments) { segment in
-                            TranscriptLine(segment: segment, isActive: activeID == segment.id,
-                                           isPlaying: store.audio.isPlaying,
-                                           isPast: store.audio.currentTime >= segment.end,
-                                           readingMode: readingMode, original: store.showOriginal,
-                                           timeColumnWidth: recording.duration >= 3600 ? 62 : 44,
-                                           textSize: textSize, searchQuery: query,
-                                           isSearchSelection: selectedSearchID == segment.id && !query.isEmpty,
-                                           isLooping: isLooping(segment), canEdit: canEditTranscript,
-                                           canPlay: canPlay, isBookmarked: isBookmarked(segment),
-                                           action: { play(segment); transcriptFocused = true },
-                                           edit: { edit(segment) }, repeatSegment: { toggleLoop(segment) },
-                                           bookmark: { addBookmark(segment) }, copy: { copy(segment) })
-                            .id(segment.id)
-                        }
-                    }.frame(maxWidth: 760, alignment: .leading)
-                        .padding(.horizontal, 30).padding(.top, readingMode ? 34 : 22).padding(.bottom, readingMode ? 90 : 25)
-                        .frame(maxWidth: .infinity)
-                }
-                .focusable().focused($transcriptFocused)
-                .onKeyPress(.space) {
-                    guard canPlay else { return .ignored }
-                    store.audio.togglePlayback(); return .handled
-                }
-                .onKeyPress(.leftArrow) {
-                    guard canPlay else { return .ignored }
-                    seek(store.audio.currentTime - 5); return .handled
-                }
-                .onKeyPress(.rightArrow) {
-                    guard canPlay else { return .ignored }
-                    seek(store.audio.currentTime + 5); return .handled
-                }
-                .onChange(of: activeID, initial: true) { _, value in
-                    guard readingMode, store.followPlayback, query.isEmpty, let value else { return }
-                    scroll(proxy, to: value)
-                }
-                .onChange(of: recording.id) { _, _ in
-                    if let first = recording.segments.first { proxy.scrollTo(first.id, anchor: .top) }
-                }
-                .onChange(of: store.followPlayback) { _, enabled in
-                    if enabled, query.isEmpty { scrollToPlayback(proxy) }
-                }
-                .onChange(of: readingMode) { _, _ in
-                    if query.isEmpty { scrollToPlayback(proxy) }
-                    else if let selectedSearchID { scroll(proxy, to: selectedSearchID) }
-                }
-                .onChange(of: selectedSearchID) { _, value in
-                    if let value { scroll(proxy, to: value) }
-                }
-                .onChange(of: query) { _, _ in
-                    selectedSearchID = matchingIDs.first
-                    if let selectedSearchID { scroll(proxy, to: selectedSearchID) }
-                }
-                .onChange(of: scrollRequest) { _, _ in scrollToPlayback(proxy) }
-                .onChange(of: searchScrollRequest) { _, _ in
-                    if let selectedSearchID { scroll(proxy, to: selectedSearchID) }
-                }
-            }
+            SelectableTranscriptView(
+                recordingID: recording.id, segments: recording.segments,
+                original: store.showOriginal, textSize: textSize, query: query,
+                selectedSearchID: selectedSearchID, activeID: activeID, playbackTime: store.audio.currentTime,
+                followPlayback: store.followPlayback, scrollRequest: scrollRequest,
+                searchScrollRequest: searchScrollRequest, canPlay: canPlay, canEdit: canEditTranscript,
+                play: play, togglePlayback: { store.audio.togglePlayback() }, isLooping: isLooping, isBookmarked: isBookmarked,
+                edit: edit, repeatSegment: toggleLoop, bookmark: addBookmark, copy: copy)
         }
     }
 
     private func displayedText(_ segment: TranscriptSegment) -> String { store.showOriginal ? segment.originalText : segment.text }
     private func openSearch() {
         showLectureNotes = false
-        readingMode = false
         if showSearch { searchFocused = true }
         else { searchFocusRequested = true; showSearch = true }
     }
@@ -321,14 +271,6 @@ struct RecordingDetailView: View {
     }
     private func closeSearch() {
         store.transcriptSearch = ""; selectedSearchID = nil; showSearch = false; searchFocused = false; searchFocusRequested = false
-        transcriptFocused = true
-    }
-    private func scroll(_ proxy: ScrollViewProxy, to id: Int) {
-        if reduceMotion { proxy.scrollTo(id, anchor: .center) }
-        else { withAnimation(.easeInOut(duration: 0.35)) { proxy.scrollTo(id, anchor: .center) } }
-    }
-    private func scrollToPlayback(_ proxy: ScrollViewProxy) {
-        if let id = activeID ?? recording.segments.last(where: { $0.start <= store.audio.currentTime })?.id ?? recording.segments.first?.id { scroll(proxy, to: id) }
     }
     private func seek(_ time: Double) {
         if let loop = store.audio.loopRange, time < loop.lowerBound || time >= loop.upperBound { store.audio.clearLoop() }
@@ -338,6 +280,7 @@ struct RecordingDetailView: View {
         guard canPlay else { return }
         if store.audio.loopRange != nil && !isLooping(segment) { store.audio.clearLoop() }
         seek(segment.start)
+        scrollRequest += 1
         if !store.audio.isPlaying { store.audio.togglePlayback() }
     }
     private func isLooping(_ segment: TranscriptSegment) -> Bool {
@@ -497,139 +440,6 @@ struct RecordingDetailView: View {
                 .font(.system(size: 14)).foregroundStyle(SoriTheme.secondary)
             Spacer()
         }.frame(maxWidth: .infinity)
-    }
-}
-
-struct TranscriptLine: View {
-    let segment: TranscriptSegment
-    let isActive: Bool
-    let isPlaying: Bool
-    let isPast: Bool
-    let readingMode: Bool
-    let original: Bool
-    let timeColumnWidth: CGFloat
-    let textSize: Double
-    let searchQuery: String
-    let isSearchSelection: Bool
-    let isLooping: Bool
-    let canEdit: Bool
-    let canPlay: Bool
-    let isBookmarked: Bool
-    let action: () -> Void
-    let edit: () -> Void
-    let repeatSegment: () -> Void
-    let bookmark: () -> Void
-    let copy: () -> Void
-    @State private var hovered = false
-    @FocusState private var focusedControl: Control?
-    private enum Control: Hashable { case timestamp, repeatSentence, edit, more }
-
-    private var text: String { original ? segment.originalText : segment.text }
-    private var showsActions: Bool { hovered || isLooping || isSearchSelection || focusedControl != nil }
-    private var showsReadingTime: Bool { showsActions || (isActive && isPlaying) }
-    private var highlightedText: AttributedString {
-        var attributed = AttributedString(text)
-        guard !searchQuery.isEmpty else { return attributed }
-        var remaining = text.startIndex..<text.endIndex
-        while let range = text.range(of: searchQuery, options: [.caseInsensitive, .diacriticInsensitive], range: remaining) {
-            if let target = Range(range, in: attributed) {
-                attributed[target].backgroundColor = SoriTheme.accentSoft
-                attributed[target].foregroundColor = SoriTheme.accent
-            }
-            guard range.upperBound < text.endIndex, range.upperBound > remaining.lowerBound else { break }
-            remaining = range.upperBound..<text.endIndex
-        }
-        return attributed
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if readingMode {
-                Button(action: action) { lineText }.buttonStyle(.plain).disabled(!canPlay)
-                    .accessibilityLabel(text).accessibilityHint("이 문장부터 음성 재생")
-                HStack(spacing: 12) {
-                    timestamp.opacity(showsReadingTime ? 1 : 0).allowsHitTesting(showsReadingTime)
-                    if isLooping {
-                        Text("반복 중").font(.system(size: 13)).foregroundStyle(SoriTheme.secondary)
-                    }
-                    Spacer(minLength: 0)
-                    actionControls(includeRepeat: true)
-                        .opacity(showsActions ? 1 : 0).allowsHitTesting(showsActions)
-                }.frame(height: 32)
-            } else {
-                HStack(alignment: .top, spacing: 16) {
-                    timestamp.frame(width: timeColumnWidth, alignment: .leading).padding(.top, 4)
-                    lineText.textSelection(.enabled)
-                    actionControls(includeRepeat: false)
-                        .opacity(showsActions ? 1 : 0).allowsHitTesting(showsActions)
-                }
-            }
-        }
-        .padding(.vertical, readingMode ? 6 : 11).padding(.horizontal, 8)
-        .background(rowBackground, in: RoundedRectangle(cornerRadius: 7))
-        .onHover { hovered = $0 }
-        .contextMenu {
-            Button("이 문장 재생", action: action).disabled(!canPlay)
-            Button(isLooping ? "문장 반복 해제" : "이 문장 반복 듣기", action: repeatSegment).disabled(!canPlay)
-            Button("문장 수정", action: edit).disabled(!canEdit)
-            Button("문장 복사", action: copy)
-            Button(isBookmarked ? "북마크 보기" : "북마크 추가", action: bookmark)
-        }
-    }
-
-    private var timestamp: some View {
-        Button(action: action) {
-            Text(TimeText.clock(segment.start)).font(.system(size: 13)).monospacedDigit()
-                .foregroundStyle(SoriTheme.secondary).contentShape(Rectangle())
-        }.buttonStyle(.plain).disabled(!canPlay)
-            .focused($focusedControl, equals: .timestamp)
-            .help("\(TimeText.clock(segment.start))부터 재생")
-            .accessibilityLabel("\(TimeText.clock(segment.start))부터 문장 재생")
-    }
-
-    private func actionControls(includeRepeat: Bool) -> some View {
-        HStack(spacing: 0) {
-            if includeRepeat {
-                Button(action: repeatSegment) { Image(systemName: "repeat.1").font(.system(size: 14)).frame(width: 32, height: 32) }
-                    .buttonStyle(DetailControlStyle()).foregroundStyle(isLooping ? SoriTheme.ink : SoriTheme.secondary).disabled(!canPlay)
-                    .focused($focusedControl, equals: .repeatSentence)
-                    .help(isLooping ? "문장 반복 해제" : "이 문장 반복 듣기")
-                    .accessibilityLabel(isLooping ? "문장 반복 해제" : "이 문장 반복 듣기")
-            }
-            Button(action: edit) { Image(systemName: "pencil").font(.system(size: 14)).frame(width: 32, height: 32) }
-                .buttonStyle(DetailControlStyle()).foregroundStyle(SoriTheme.secondary).disabled(!canEdit)
-                .help("문장 수정").accessibilityLabel("문장 수정")
-                .focused($focusedControl, equals: .edit)
-            Menu {
-                if !includeRepeat {
-                    Button(isLooping ? "문장 반복 해제" : "이 문장 반복 듣기", action: repeatSegment).disabled(!canPlay)
-                }
-                Button("문장 복사", action: copy)
-                Button(isBookmarked ? "북마크 보기" : "북마크 추가", action: bookmark)
-            } label: { Image(systemName: isBookmarked ? "bookmark.fill" : "ellipsis").font(.system(size: 14)).frame(width: 16, height: 16) }
-                .menuStyle(.borderlessButton).menuIndicator(.hidden).frame(width: 32, height: 32).tint(SoriTheme.secondary)
-                .help("문장 메뉴").accessibilityLabel("문장 반복 듣기, 복사와 북마크")
-                .focused($focusedControl, equals: .more)
-        }.frame(width: includeRepeat ? 96 : 64, height: 32)
-    }
-    private var lineText: some View {
-        Text(highlightedText)
-            .font(.system(size: readingMode ? textSize : 16, weight: readingMode ? .semibold : .regular))
-            .tracking(readingMode ? -0.5 : 0).lineSpacing(readingMode ? 10 : 8)
-            .foregroundStyle(textColor).multilineTextAlignment(.leading)
-            .lineLimit(nil).allowsTightening(false)
-            .frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true).layoutPriority(1)
-    }
-    private var textColor: Color {
-        if !readingMode { return SoriTheme.ink }
-        if isActive || hovered || isSearchSelection { return SoriTheme.ink }
-        return isPast ? SoriTheme.secondary.opacity(0.75) : SoriTheme.secondary
-    }
-    private var rowBackground: Color {
-        if isSearchSelection { return SoriTheme.accentSoft.opacity(0.55) }
-        guard !readingMode else { return .clear }
-        if isActive { return SoriTheme.accentSoft }
-        return hovered ? SoriTheme.line.opacity(0.5) : .clear
     }
 }
 
