@@ -141,7 +141,6 @@ struct RecordingDetailView: View {
                             }
                         }
                     }
-                    Button("재생 위치로 이동") { showLectureNotes = false; scrollRequest += 1 }.disabled(!canPlay || recording.segments.isEmpty)
                     Divider()
                     if !recording.status.isProcessing && recording.id != store.recordingID {
                         Button("다시 정리하기") { store.enqueue(recording.id) }.disabled(!store.canTranscribe(recording.id))
@@ -182,13 +181,6 @@ struct RecordingDetailView: View {
             }
             Spacer(minLength: 4)
             if !showLectureNotes {
-                Button {
-                    store.followPlayback = true
-                    scrollRequest += 1
-                } label: { Image(systemName: "scope").font(.system(size: 16)).frame(width: 32, height: 34) }
-                    .buttonStyle(DetailControlStyle()).foregroundStyle(SoriTheme.secondary)
-                    .disabled(!canPlay || recording.segments.isEmpty)
-                    .help("재생 중인 문장으로 이동").accessibilityLabel("재생 중인 문장으로 이동")
                 Button { store.copyTranscript() } label: {
                     Image(systemName: "doc.on.doc").font(.system(size: 15)).frame(width: 32, height: 34)
                 }.buttonStyle(DetailControlStyle()).foregroundStyle(SoriTheme.secondary)

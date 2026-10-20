@@ -99,7 +99,7 @@ struct SelectableTranscriptView: NSViewRepresentable {
         text.textContainerInset = NSSize(width: 38, height: 30)
         text.linkTextAttributes = [.foregroundColor: NSColor.secondaryLabelColor, .underlineStyle: 0]
         text.setAccessibilityLabel("전사문")
-        text.setAccessibilityHelp("본문을 선택해 복사하고, 시간 표시를 눌러 재생합니다. 문장 메뉴는 마우스 오른쪽 버튼으로 엽니다.")
+        text.setAccessibilityHelp("문장을 클릭하면 해당 구간부터 재생합니다. 드래그하여 본문을 선택하고 복사할 수 있습니다. 문장 메뉴는 마우스 오른쪽 버튼으로 엽니다.")
         text.delegate = coordinator
         scroll.documentView = text
         coordinator.textView = text
@@ -140,6 +140,16 @@ struct SelectableTranscriptView: NSViewRepresentable {
                 }
             }
             textView.togglePlayback = value.canPlay ? value.togglePlayback : nil
+            textView.playSentence = value.canPlay ? { [weak self] index in
+                guard let self, let entry = self.document?.entries.first(where: {
+                    NSLocationInRange(index, $0.textRange)
+                }) else { return }
+                self.parent.play(entry.segment)
+            } : nil
+            if rebuilt || previous?.canPlay != value.canPlay {
+                textView.playableRanges = value.canPlay ? document?.entries.map(\.textRange) ?? [] : []
+                textView.window?.invalidateCursorRects(for: textView)
+            }
             textView.sentenceMenu = { [weak self] index in self?.menu(at: index) ?? [] }
             if rebuilt || previous?.activeID != value.activeID || previous?.selectedSearchID != value.selectedSearchID {
                 applyHighlights()
@@ -214,6 +224,8 @@ final class TranscriptMenuItem: NSMenuItem {
 final class TranscriptTextView: NSTextView {
     var sentenceMenu: ((Int) -> [NSMenuItem])?
     var togglePlayback: (() -> Void)?
+    var playSentence: ((Int) -> Void)?
+    var playableRanges: [NSRange] = []
     private(set) var isSelecting = false
     var hasSelection: Bool { selectedRanges.contains { $0.rangeValue.length > 0 } }
 
@@ -227,7 +239,60 @@ final class TranscriptTextView: NSTextView {
     override func mouseDown(with event: NSEvent) {
         isSelecting = true
         defer { isSelecting = false }
-        super.mouseDown(with: event)
+        guard let index = playableCharacterIndex(at: convert(event.locationInWindow, from: nil)),
+              event.clickCount == 1,
+              event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty,
+              let next = window?.nextEvent(matching: [.leftMouseUp, .leftMouseDragged],
+                                          until: .distantFuture, inMode: .eventTracking, dequeue: true) else {
+            super.mouseDown(with: event)
+            return
+        }
+        if next.type == .leftMouseUp {
+            window?.makeFirstResponder(self)
+            setSelectedRange(NSRange(location: index, length: 0))
+            playSentence?(index)
+        } else {
+            // Replay the first drag for AppKit's native selection loop. It owns
+            // subsequent dragging, cross-sentence selection, and autoscrolling.
+            NSApp.postEvent(next, atStart: true)
+            super.mouseDown(with: event)
+        }
+    }
+
+    /// Hit-test glyph bounds, not the nearest insertion point: margins and the
+    /// space between paragraphs must not play an adjacent sentence.
+    func playableCharacterIndex(at point: NSPoint) -> Int? {
+        guard let layoutManager, let textContainer, !playableRanges.isEmpty else { return nil }
+        let local = NSPoint(x: point.x - textContainerOrigin.x, y: point.y - textContainerOrigin.y)
+        layoutManager.ensureLayout(for: textContainer)
+        let glyph = layoutManager.glyphIndex(for: local, in: textContainer)
+        guard glyph < layoutManager.numberOfGlyphs,
+              layoutManager.boundingRect(forGlyphRange: NSRange(location: glyph, length: 1),
+                                         in: textContainer).contains(local) else { return nil }
+        let index = layoutManager.characterIndexForGlyph(at: glyph)
+        return playableRanges.contains(where: { NSLocationInRange(index, $0) }) ? index : nil
+    }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        guard let layoutManager, let textContainer else { return }
+        layoutManager.ensureLayout(for: textContainer)
+        for range in playableRanges {
+            let glyphs = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+            layoutManager.enumerateEnclosingRects(forGlyphRange: glyphs, withinSelectedGlyphRange: NSRange(location: NSNotFound, length: 0),
+                                                  in: textContainer) { rect, _ in
+                let visible = rect.offsetBy(dx: self.textContainerOrigin.x, dy: self.textContainerOrigin.y).intersection(self.visibleRect)
+                if !visible.isEmpty { self.addCursorRect(visible, cursor: .pointingHand) }
+            }
+        }
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        if playableCharacterIndex(at: convert(event.locationInWindow, from: nil)) != nil {
+            NSCursor.pointingHand.set()
+        } else {
+            super.cursorUpdate(with: event)
+        }
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {

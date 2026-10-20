@@ -107,7 +107,7 @@ import SoriCore
         XCTAssertFalse(text.string.contains(segments[0].text))
     }
 
-    func testOnlyTimestampLinkStartsPlayback() throws {
+    func testTimestampLinkStillStartsPlayback() throws {
         var played: [Int] = []
         let view = view(play: { played.append($0.id) })
         let coordinator = view.makeCoordinator()
@@ -119,6 +119,70 @@ import SoriCore
         text.setSelectedRange(entry.textRange)
         XCTAssertTrue(played.isEmpty)
         XCTAssertTrue(coordinator.textView(text, clickedOnLink: URL(string: "doongdoong://sentence/42")!, at: entry.range.location))
+        XCTAssertEqual(played, [42])
+    }
+
+    func testSentenceClickAndPointerUseRenderedTextAndRespectPlaybackAvailability() throws {
+        var played: [Int] = []
+        let initial = view(play: { played.append($0.id) })
+        let coordinator = initial.makeCoordinator()
+        let scroll = initial.makeScrollView(coordinator: coordinator)
+        let window = NSWindow(contentRect: NSRect(x: -2000, y: -2000, width: 700, height: 500),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = scroll
+        defer { window.close() }
+        coordinator.update(initial, scroll: scroll)
+        scroll.layoutSubtreeIfNeeded()
+        let text = try XCTUnwrap(scroll.documentView as? TranscriptTextView)
+        let entry = try XCTUnwrap(coordinator.document?.entries.last)
+        let layout = try XCTUnwrap(text.layoutManager)
+        let container = try XCTUnwrap(text.textContainer)
+        layout.ensureLayout(for: container)
+        let glyphs = layout.glyphRange(forCharacterRange: NSRange(location: entry.textRange.location, length: 1),
+                                      actualCharacterRange: nil)
+        let rect = layout.boundingRect(forGlyphRange: glyphs, in: container)
+        let point = NSPoint(x: rect.midX + text.textContainerOrigin.x, y: rect.midY + text.textContainerOrigin.y)
+        XCTAssertEqual(text.playableCharacterIndex(at: point), entry.textRange.location)
+        XCTAssertNil(text.playableCharacterIndex(at: NSPoint(x: 4, y: point.y)))
+        XCTAssertNil(text.playableCharacterIndex(at: NSPoint(x: 650, y: point.y)))
+        let location = text.convert(point, to: nil)
+        func event(_ type: NSEvent.EventType, clicks: Int = 1, flags: NSEvent.ModifierFlags = [],
+                   at point: NSPoint? = nil) -> NSEvent {
+            NSEvent.mouseEvent(with: type, location: point ?? location, modifierFlags: flags,
+                              timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                              context: nil, eventNumber: 0, clickCount: clicks, pressure: 1)!
+        }
+        let priorCursor = NSCursor.current
+        defer { priorCursor.set() }
+        text.cursorUpdate(with: event(.mouseMoved))
+        XCTAssertEqual(NSCursor.current, NSCursor.pointingHand)
+
+        NSApp.postEvent(event(.leftMouseUp), atStart: true)
+        text.mouseDown(with: event(.leftMouseDown))
+        XCTAssertEqual(played, [42])
+
+        // A native drag selects text without seeking.
+        let end = NSPoint(x: location.x + 90, y: location.y)
+        NSApp.postEvent(event(.leftMouseUp, at: end), atStart: true)
+        NSApp.postEvent(event(.leftMouseDragged, at: end), atStart: true)
+        text.mouseDown(with: event(.leftMouseDown))
+        XCTAssertTrue(text.hasSelection)
+        XCTAssertEqual(played, [42])
+
+        NSApp.postEvent(event(.leftMouseUp, clicks: 2), atStart: true)
+        text.mouseDown(with: event(.leftMouseDown, clicks: 2))
+        XCTAssertTrue(text.hasSelection)
+        XCTAssertEqual(played, [42])
+
+        NSApp.postEvent(event(.leftMouseUp, flags: .shift), atStart: true)
+        text.mouseDown(with: event(.leftMouseDown, flags: .shift))
+        XCTAssertEqual(played, [42])
+
+        coordinator.update(view(canPlay: false, play: { played.append($0.id) }), scroll: scroll)
+        XCTAssertNil(text.playableCharacterIndex(at: point))
+        NSApp.postEvent(event(.leftMouseUp), atStart: true)
+        text.mouseDown(with: event(.leftMouseDown))
         XCTAssertEqual(played, [42])
     }
 }
