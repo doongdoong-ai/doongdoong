@@ -98,10 +98,16 @@ public enum LectureReview {
                 guard edit.before.count <= 40, edit.after.count <= 40,
                       punctuationSemantics(edit.before) == punctuationSemantics(edit.after),
                       letters(edit.before).count >= 2,
-                      editDistance(letters(edit.before), letters(edit.after)) <= max(1, Int(Double(letters(edit.before).count) * 0.6)),
-                      Set(edit.evidence.map(\.segmentID)).count >= 2, edit.evidence.count <= 3,
+                      editDistance(letters(edit.before), letters(edit.after)) <= max(1,
+                        Int(Double(letters(edit.before).count) * (edit.evidence.count >= 2 ? 0.75 : 0.6))),
+                      !edit.evidence.isEmpty || preservesUnattestedPredicate(edit.before, edit.after),
+                      Set(edit.evidence.map(\.segmentID)).count == edit.evidence.count, edit.evidence.count <= 3,
                       edit.evidence.allSatisfy({ $0.segmentID != edit.segmentID && valid($0, in: byID)
                           && compact($0.quote).contains(compact(edit.after)) }) else { throw invalid("unsupported_recognition") }
+                guard !breaksParticle(before: edit.before, after: edit.after,
+                                      suffix: original.substring(from: range.location + range.length)) else {
+                    throw invalid("particle_agreement")
+                }
             default: throw invalid("unknown_kind")
             }
             for (prior, _) in changes[edit.segmentID, default: []] {
@@ -204,11 +210,11 @@ public enum LectureReview {
                         guard requests < 128 else { throw invalid("fallback_exhausted") }
                         requests += 1
                         let data = try await request(.init(instructions: LectureReviewPrompts.correction,
-                            input: input, schema: try schema(ids: ids)))
+                            input: input, schema: try planSchema(ids: ids)))
                         try Task.checkCancellation()
                         guard data.count <= maximumResponseBytes else { throw TextGenerationError.capacityExceeded }
                         do {
-                            let proposal = try decode(data)
+                            let proposal = try decodePlan(data, source: visible)
                             // Explicitly incomplete review is not a successful revision.
                             // Retry once before reducing the scope on output exhaustion.
                             if !proposal.complete {
@@ -217,13 +223,12 @@ public enum LectureReview {
                                 continue
                             }
                             let checked = try validated(proposal, source: visible, ids: Set(ids))
-                            if checked.1.isEmpty || attempt == 2 {
-                                let saved = NodeReceipt(targetIDs: ids, proposal: checked.0, rejected: checked.1, split: false)
-                                try encoder.encode(saved).write(to: nodeURL, options: .atomic)
-                                await accept(checked.0, rejected: checked.1, count: target.count)
-                                return
-                            }
-                            payload["validationFeedback"] = try JSONSerialization.jsonObject(with: encoder.encode(checked.1))
+                            // Semantic rejections do not invalidate the entire completed review.
+                            // Keep independent validated edits and omit rejected proposals.
+                            let saved = NodeReceipt(targetIDs: ids, proposal: checked.0, rejected: checked.1, split: false)
+                            try encoder.encode(saved).write(to: nodeURL, options: .atomic)
+                            await accept(checked.0, rejected: checked.1, count: target.count)
+                            return
                         } catch let error as TextGenerationError { throw error }
                         catch {
                             if attempt == 2 { throw error }
@@ -280,9 +285,31 @@ public enum LectureReview {
         let groups = Dictionary(grouping: proposal.edits, by: \.segmentID)
         for id in groups.keys.sorted() {
             let edits = groups[id]!
+            var candidates: [Edit] = []
+            // An invalid proposal must not erase independent valid repairs in the same sentence.
+            for edit in edits {
+                do {
+                    _ = try apply(.init(complete: true, edits: [edit]), to: source, editableIDs: ids)
+                    candidates.append(edit)
+                } catch let error as ValidationError {
+                    rejected.append(.init(segmentID: id, code: error.code))
+                }
+            }
+            if let segment = source.first(where: { $0.id == id }) {
+                let text = segment.text as NSString
+                let ranges = candidates.map { text.range(of: $0.before) }
+                let conflicting = Set(ranges.indices.filter { index in
+                    ranges.indices.contains { $0 != index && NSIntersectionRange(ranges[index], ranges[$0]).length > 0 }
+                })
+                if !conflicting.isEmpty {
+                    rejected.append(.init(segmentID: id, code: "overlapping_edits"))
+                    candidates = candidates.enumerated().filter { !conflicting.contains($0.offset) }.map(\.element)
+                }
+            }
+            guard !candidates.isEmpty else { continue }
             do {
-                _ = try apply(.init(complete: true, edits: edits), to: source, editableIDs: ids)
-                accepted += edits
+                _ = try apply(.init(complete: true, edits: candidates), to: source, editableIDs: ids)
+                accepted += candidates
             } catch let error as ValidationError {
                 rejected.append(.init(segmentID: id, code: error.code))
             }
@@ -308,7 +335,19 @@ public enum LectureReview {
     }
     private static func protected(_ value: String) -> [String] {
         // Retain signed quantities, decimal/date separators, Latin identifiers and meaning-bearing Korean stems.
-        matches(#"[+−-]?(?:\d+(?:[.,:/]\d+)*|[.,]\d+)(?:[%％‰°])?|[A-Za-z][A-Za-z0-9_]*|[영공일이삼사오육칠팔구십백천만억조]+(?=원|달러|년|월|개|명|배|퍼센트|프로|분|초|시간|점|$)|[=<>≤≥±×÷∑√^₩$€£%％]|않|못|아니|없|말고|제외|이상|이하|초과|미만|반드시|아마|불가능|가능|불확실|확실"#, compact(value))
+        matches(#"[+−-]?(?:\d+(?:[.,:/]\d+)*|[.,]\d+)(?:조|억|만|천)?(?:퍼센트|시간|달러|위안|유로|파운드|원|년|월|일|개|명|배|분|초|점|엔|프랑|리라|[%％‰°])?|[A-Za-z][A-Za-z0-9_]*|[영공일이삼사오육칠팔구십백천만억조]+(?=원|달러|년|월|개|명|배|퍼센트|프로|분|초|시간|점)|^[영공일이삼사오육칠팔구십백천만억조]+$|[=<>≤≥±×÷∑√^₩$€£%％]|않|못|아니|없|말고|제외|이상|이하|초과|미만|반드시|아마|불가능|가능|불확실|확실"#, compact(value))
+    }
+    /// Catch newly broken noun/particle joins without rewriting the user's sentence.
+    /// Only unambiguous standalone particles are checked; words beginning with 이/가 are not particles.
+    private static func breaksParticle(before: String, after: String, suffix: String) -> Bool {
+        func finalConsonant(_ text: String) -> Bool? {
+            guard let scalar = text.unicodeScalars.last, (0xAC00...0xD7A3).contains(scalar.value) else { return nil }
+            return (scalar.value - 0xAC00) % 28 != 0
+        }
+        guard let old = finalConsonant(before), let new = finalConsonant(after), old != new,
+              let particle = matches(#"^(?:은|는|이|가|을|를|과|와)(?=\s|[.,!?。]|$)"#, suffix).first else { return false }
+        let requiresConsonant = ["은", "이", "을", "과"].contains(particle)
+        return old == requiresConsonant && new != requiresConsonant
     }
     private static func punctuationSemantics(_ value: String) -> [String] {
         // Do not alter questions, quotes, parentheses, math, or decimal punctuation by calling it formatting.
@@ -319,7 +358,26 @@ public enum LectureReview {
     }
     private static func editDistance(_ a: String, _ b: String) -> Int {
         if a == b { return 0 }
-        let left = Array(a), right = Array(b)
+        return distance(Array(a), Array(b))
+    }
+    /// Shared verb endings and unchanged neighboring words must not make a new predicate
+    /// look like a small spelling fix. This is a conservative guard, not a Korean parser.
+    private static func preservesUnattestedPredicate(_ before: String, _ after: String) -> Bool {
+        let leftWords = before.split(whereSeparator: \.isWhitespace)
+        let rightWords = after.split(whereSeparator: \.isWhitespace)
+        guard leftWords.count == rightWords.count else { return true }
+        for (leftWord, rightWord) in zip(leftWords, rightWords) where leftWord != rightWord {
+            let leftText = letters(String(leftWord)), rightText = letters(String(rightWord))
+            let ending = #"(?:하고|하는|해서|하며|하니|합니다|했다|했어요|해요|한다|되고|되는|되어|됩니다|됐어요)$"#
+            guard let shared = matches(ending, leftText).first,
+                  matches(ending, rightText).first == shared else { continue }
+            let left = leftText.decomposedStringWithCanonicalMapping.unicodeScalars.map(\.value)
+            let right = rightText.decomposedStringWithCanonicalMapping.unicodeScalars.map(\.value)
+            if distance(left, right) > max(1, left.count / 4) { return false }
+        }
+        return true
+    }
+    private static func distance<Element: Equatable>(_ left: [Element], _ right: [Element]) -> Int {
         var previous = Array(0...right.count)
         for (i, value) in left.enumerated() {
             var row = [i + 1] + Array(repeating: 0, count: right.count)
