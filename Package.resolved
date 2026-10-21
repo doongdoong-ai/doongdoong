@@ -1,0 +1,15 @@
+{
+  "originHash" : "56c10e23ac0d7798f403e840f289e5f282ed82b38cf5a4c820d420a721b0a48c",
+  "pins" : [
+    {
+      "identity" : "transcription-core",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/doongdoong-ai/transcription-core.git",
+      "state" : {
+        "revision" : "16fb2abade3d035479f539a87af4b36b35c32308",
+        "version" : "0.1.0"
+      }
+    }
+  ],
+  "version" : 3
+}

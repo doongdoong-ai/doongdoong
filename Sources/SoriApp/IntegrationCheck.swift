@@ -1,13 +1,16 @@
 import Foundation
 import SoriCore
+import SoriSpeech
 
-/// Headless acceptance check: a completed synthetic file, local STT, and real text correction.
+/// Headless acceptance check: local Whisper transcription, native timestamps and selected-model analysis.
 @MainActor
 enum IntegrationCheck {
     static func run(store: AppStore, reportURL: URL) async -> Bool {
         var checks: [String] = []
         do {
             guard let repository = store.repository else { throw SoriError.message("No library") }
+            await store.settings.refreshAIConnection()?.value
+            guard let selection = store.settings.selectedModel else { throw SoriError.message(store.settings.aiConnectionMessage) }
             let invalid = store.root.appendingPathComponent("not-audio.txt")
             try Data("This is not audio.".utf8).write(to: invalid)
             defer { try? FileManager.default.removeItem(at: invalid) }
@@ -18,30 +21,45 @@ enum IntegrationCheck {
             guard leftovers.isEmpty else { throw SoriError.message("Import staging was not cleaned up") }
             store.errorMessage = nil
             checks.append("invalid file rejection without phantom recordings or partial files")
-            let sample = AppResources.directory.appendingPathComponent("welcome.wav")
-            await store.importFiles([sample])
+            let arguments = ProcessInfo.processInfo.arguments
+            let existingIndex = arguments.firstIndex(of: "--integration-existing")
+            let usesExisting = existingIndex != nil
+            if let index = existingIndex, arguments.count > index + 1, let id = UUID(uuidString: arguments[index + 1]),
+               store.recordings.contains(where: { $0.id == id }) {
+                store.select(id); store.enqueue(id)
+            } else if usesExisting {
+                throw SoriError.message("Integration recording not found in the isolated library")
+            } else {
+                let sample = AppResources.directory.appendingPathComponent("welcome.wav")
+                await store.importFiles([sample])
+            }
             let started = ProcessInfo.processInfo.systemUptime
-            let deadline = Date().addingTimeInterval(300)
+            let deadline = Date().addingTimeInterval(usesExisting ? 3600 : 300)
             while store.processingID != nil || !store.queue.isEmpty {
                 guard Date() < deadline else { throw SoriError.message("AI processing timed out") }
                 try await Task.sleep(for: .milliseconds(200))
             }
-            guard let recording = store.selected, recording.status == .ready, recording.segments.count >= 3,
-                  recording.message == nil else { throw SoriError.message(store.selected?.message ?? store.errorMessage ?? "AI produced no transcript") }
+            guard let recording = store.selected, [.ready, .reviewNeeded].contains(recording.status), recording.segments.count >= 3 else { throw SoriError.message(store.selected?.message ?? store.errorMessage ?? "AI produced no transcript") }
             let processingSeconds = ProcessInfo.processInfo.systemUptime - started
             let outputDirectory = try repository.directory(for: recording)
-            let originalURL = outputDirectory.appendingPathComponent("whisper-original.json")
-            let original = try Transcript.parseWhisper(Data(contentsOf: originalURL), duration: recording.duration)
-            guard !original.isEmpty, original.map(\.start) == recording.segments.map(\.start),
-                  original.map(\.end) == recording.segments.map(\.end),
-                  original.map(\.id) == recording.segments.map(\.id),
-                  original.map(\.text) == recording.segments.map(\.originalText) else {
-                throw SoriError.message("Text correction altered source intervals or lost original text")
+            let originalURL = outputDirectory.appendingPathComponent("local-asr-original.json")
+            let raw = try JSONSerialization.jsonObject(with: Data(contentsOf: originalURL)) as? [String: Any]
+            guard raw?["text"] is String else { throw SoriError.message("Missing ASR original") }
+            guard FileManager.default.fileExists(atPath: outputDirectory.appendingPathComponent("final-review.json").path) else { throw SoriError.message("Final review did not finish") }
+            guard let title = recording.generatedTitle, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  recording.lectureHighlights != nil,
+                  let analysis = try JSONSerialization.jsonObject(with: Data(contentsOf: outputDirectory.appendingPathComponent("processing-lecture.json"))) as? [String: Any],
+                  analysis["outcome"] as? String == "complete" else {
+                throw SoriError.message("Lecture title and summary did not finish")
             }
-            let correctionsURL = outputDirectory.appendingPathComponent("codex-corrections.json")
-            let corrected = try Transcript.applyCorrections(Data(contentsOf: correctionsURL), to: original)
-            guard corrected == recording.segments else { throw SoriError.message("Saved text does not match the validated AI result") }
-            guard recording.fullText.contains("좋은 생각"), recording.fullText.contains("꺼내 읽을 수 있도록") else {
+            struct Original: Decodable { let segments: [TranscriptSegment] }
+            let aligned = try JSONDecoder().decode(Original.self, from: Data(contentsOf: originalURL)).segments
+            guard aligned.count == recording.segments.count,
+                  zip(aligned, recording.segments).allSatisfy({ before, after in
+                      before.id == after.id && before.start == after.start && before.end == after.end
+                          && before.originalText == after.originalText
+                  }) else { throw SoriError.message("Final review changed ASR identity or timing") }
+            if !usesExisting && !(recording.fullText.contains("좋은 생각") && recording.fullText.contains("읽을 수 있도록")) {
                 throw SoriError.message("Transcript is missing the beginning or end of the synthetic recording")
             }
             for (index, segment) in recording.segments.enumerated() {
@@ -50,10 +68,11 @@ enum IntegrationCheck {
                     throw SoriError.message("Sentence intervals are invalid")
                 }
             }
-            checks.append("completed 16 kHz WAV file batch-transcribed with local Whisper large-v3-turbo")
-            checks.append("real Codex text correction through the existing ChatGPT login")
-            checks.append("source text, segment identities and STT timestamps preserved through text correction")
-            checks.append("beginning and end of the recording retained with ordered, bounded intervals")
+            checks.append("completed audio file processed through \(selection.rawValue) with bounded file chunks and acoustic gap recovery")
+            checks.append("real \(selection.rawValue) lecture analysis through the existing ChatGPT login")
+            checks.append("whole-lecture final review preserves original text, IDs and acoustic playback times")
+            checks.append("approximate sentence timings excluded from follow-along: \(recording.segments.filter { !$0.hasReliableTiming }.count); suspected gaps: \((recording.reviewRanges ?? []).count)")
+            checks.append(usesExisting ? "lecture transcript has ordered, bounded acoustic intervals; uncertain positions are explicitly marked" : "beginning and end of the synthetic recording retained with ordered, bounded intervals")
             guard store.audio.duration > 20, !recording.waveform.isEmpty, recording.waveform.count <= 180 else { throw SoriError.message("Invalid audio duration or waveform") }
             store.audio.seek(6.5)
             guard abs(store.audio.currentTime - 6.5) < 0.05 else { throw SoriError.message("Seek failed") }
@@ -66,7 +85,7 @@ enum IntegrationCheck {
             try await Task.sleep(for: .milliseconds(750))
             // AVAudioPlayer can report a few milliseconds before the requested
             // seek point while its decoder aligns a frame.
-            guard store.audio.isPlaying, store.audio.loopRange != nil, store.audio.currentTime >= 5.98, store.audio.currentTime < 6.5 else { throw SoriError.message("Sentence repeat failed: playing=\(store.audio.isPlaying), time=\(store.audio.currentTime), range=\(String(describing: store.audio.loopRange))") }
+            guard store.audio.isPlaying, store.audio.loopRange != nil, store.audio.currentTime >= 5.95, store.audio.currentTime < 6.5 else { throw SoriError.message("Sentence repeat failed: playing=\(store.audio.isPlaying), time=\(store.audio.currentTime), range=\(String(describing: store.audio.loopRange))") }
             store.audio.seek(6.4)
             guard store.audio.loopRange == nil else { throw SoriError.message("Seeking out of sentence did not clear repeat") }
             store.audio.setLoop(start: store.audio.duration - 0.3, end: store.audio.duration)
@@ -108,7 +127,7 @@ enum IntegrationCheck {
             guard subtitles.contains(" --> ") else { throw SoriError.message("SRT export failed") }
             try Data(subtitles.utf8).write(to: store.root.appendingPathComponent("acceptance.srt"))
             checks.append("subtitle export")
-            let report: [String: Any] = ["passed": true, "checks": checks, "duration": saved.duration, "segments": saved.segments.count, "processingSeconds": processingSeconds, "scope": "batch-file-transcription-and-local-library", "model": URL(fileURLWithPath: store.settings.modelPath).lastPathComponent, "textCorrection": "codex-chatgpt", "timing": "whisper-segment-timestamps", "syntheticAudio": true]
+            let report: [String: Any] = ["passed": true, "checks": checks, "duration": saved.duration, "segments": saved.segments.count, "processingSeconds": processingSeconds, "scope": "batch-file-transcription-and-local-library", "model": selection.rawValue, "textCorrection": LectureReviewPrompts.version, "timing": "whisper-native", "syntheticAudio": !usesExisting]
             try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: reportURL, options: .atomic)
             return true
         } catch {

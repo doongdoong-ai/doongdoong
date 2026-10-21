@@ -1,22 +1,77 @@
 # 둥둥이 구현·운영 상세
 
-녹음을 마치면 AI가 텍스트로 정리하고, 재생하는 문장을 따라 읽는 macOS 앱입니다. 녹음·텍스트·메모를 작업 폴더에 함께 보관합니다. macOS 14 이상을 지원합니다.
+둥둥이는 **전사 → 보정 → 강조 내용 분석**으로 책임을 나눕니다. 현재 전사만 `doongdoong-ai/transcription-core`의 Swift 패키지로 분리했고, 보정·제목·핵심 요약은 앱에 남아 있습니다.
 
-## 하나의 AI 작업
+## 전사 코어와 앱의 경계
 
-사용자는 녹음을 마치거나 파일을 가져오면 됩니다. 진행 화면은 **“AI가 녹음을 정리하고 있어요”**, 완료 상태는 **“정리 완료”**로 통일했습니다. 모델 이름과 내부 처리 단계는 진행 화면에 나타나지 않습니다. 엔진 경로는 접힌 고급 설정에만 있습니다.
+| 구성 | 입력 → 출력 | 소유 코드 |
+|---|---|---|
+| 전사 | PCM WAV → 원문·시작/종료 시각 | 독립 패키지 `DoongdoongTranscription` |
+| 보정 | 원문·문장 ID → 검증된 교정문 | `SoriCore/LectureReview.swift`, 앱 파이프라인 |
+| 강조 분석 | 전사문 → 제목·근거가 있는 요약 카드 | 앱 `TranscriptionPipeline` |
+| 녹음·라이브러리·재생 | 사용자 조작 → 파일·UI | `SoriApp` |
 
-구현은 **완료된 파일 → 음성 감지 → Whisper large-v3-turbo → Codex 텍스트 교정 → 저장**입니다. Silero v6.2.0으로 음성 구간을 감지하고, Whisper는 `whisper.cpp`와 Metal로 Mac에서 실행합니다. 음성이 감지되지 않으면 Codex를 호출하지 않으며 녹음 파일은 보관합니다. Codex에는 텍스트만 보냅니다. 녹음 중 전사·전송하지 않고 파일을 재생 속도로 스트리밍하지 않습니다. 앱은 별도 API 키 결제로 전환하지 않으며 기존 ChatGPT 계정의 Codex 로그인을 사용합니다. Codex 요청에는 구독 사용량과 계정 제한이 적용됩니다.
+앱의 `SoriSpeech/LocalTranscription.swift`는 코어 출력을 기존 `TranscriptSegment`로 바꾸는 어댑터입니다. 코어는 SoriCore, SwiftUI, Codex, 로그인 정보에 의존하지 않습니다. 원문과 타임스탬프는 코어가 결정하고, 보정은 문장 ID·원문·시간을 바꿀 수 없습니다.
 
-Whisper의 구간 ID·시간정보와 원문은 보존하고 Codex가 교정한 문장만 반영합니다. 교정에 실패하면 변환된 텍스트를 보관하고 다시 시도할 수 있다는 안내를 표시합니다. 시간정보는 음성 인식 모델의 추정 구간이며, 정밀한 단어 정렬을 보장하지 않습니다. 요약·번역·새 내용 생성은 교정 작업에 포함하지 않습니다.
+## 메모리에 유지한 모델로 증분 처리
 
-Codex 교정은 `--model gpt-6.1-sol`과 `model_reasoning_effort="medium"`을 매번 명시합니다. 개인 Codex 설정이나 CLI 기본 모델에 의존하지 않습니다. `processing.json`에는 요청한 모델과 추론 강도를 기록하며, 이는 서버가 실제 사용한 모델을 확인한 기록과는 구분됩니다.
+AVAudioRecorder가 16 kHz·mono·PCM16 WAV를 저장합니다. 앱이 2초마다 새 구간을 확인하며, 최대 60초 구간의 끝부분 5초에서 260 ms 이상의 쉼을 우선 경계로 사용합니다. 이미 처리한 음성을 겹쳐 반복 디코딩하지 않습니다.
 
-전사문 교정이 끝나면 같은 모델이 별도 요청으로 강의 주제에 맞는 제목과 강조 카드를 만듭니다. 제목은 AI가 처음 생성한 뒤부터 수정할 수 있으며, 사용자가 수정한 제목은 재정리해도 유지합니다. 강조 카드는 명시적인 강조 표현이나 서로 다른 대목에서 반복한 설명에 근거하며, 근거가 없으면 빈 결과를 표시합니다. 음성의 억양·강세나 강의자료를 분석한 결과가 아닙니다. 카드마다 실제 전사문 인용과 구간 ID를 검증하고 원래 오디오 시간으로 이동합니다.
+`WhisperEngine` 하나를 녹음과 파일 가져오기 세션이 공유합니다. 첫 요청에서 whisper-server와 large-v3-turbo FP16 모델을 로딩하고 다음 요청부터 재사용합니다. actor의 reentrancy와 별도로 FIFO gate를 두어 추론과 모델 변경을 직렬화합니다. 앱 종료 시 엔진을 해제합니다.
 
-긴 전사문은 빠짐없이 나눠 분석하고, 각 부분의 주제와 근거가 검증된 카드를 종합해 제목과 최대 12개의 카드를 선택합니다. 일반 길이는 한 번에 분석해 최대 8개를 반환합니다. 분석 실패 시 전사문은 보존하고 다시 시도할 수 있습니다. 기존 녹음은 **핵심 요약 → 핵심 요약 만들기**로 음성 재전사 없이 정리할 수 있습니다. 전사문을 직접 수정하면 이전 카드를 숨기고 수정된 전사문으로 다시 만들 수 있도록 합니다. 제목·카드는 `recording.json`에 함께 저장하며 이전 버전의 기록도 읽습니다.
+서버는 127.0.0.1의 임시 포트·무작위 경로에서만 동작합니다. WAV multipart 요청의 verbose_json 응답에서 세그먼트 시각을 얻고 구간 오프셋을 더합니다. 리다이렉트를 거부하고 자식 프로세스에 인증정보를 전달하지 않습니다. localhost HTTP는 IPC이며 외부 음성 업로드가 아닙니다.
 
-[Whisper 모델 설명](https://huggingface.co/openai/whisper-large-v3-turbo) · [음성 감지 모델](https://huggingface.co/ggml-org/whisper-vad) · [whisper.cpp](https://github.com/ggml-org/whisper.cpp) · [Codex CLI](https://learn.chatgpt.com/docs/developer-commands?surface=cli)
+Silero VAD를 사용하고 디지털 무음은 디코더에 보내지 않습니다. 작은 발화를 놓치거나 Whisper가 반복·환각을 만들 가능성은 남습니다. native timestamp는 단어 단위 강제 정렬이 아니며 정확성을 보증하지 않습니다. 새 결과의 timingQuality는 whisper이고 이전 aligned/approximate 기록도 읽습니다.
+
+정상 녹음 종료는 진행 중인 추론을 취소하지 않습니다. 해당 구간을 마친 뒤 완료한 결과를 재사용하여 마지막 잔여 구간을 처리합니다. 앱 종료·사용자 취소 시 실행 중 엔진을 종료하되 완료된 체크포인트는 유지합니다.
+
+## 실패·재개·분석
+
+구간 완료 전에는 커서를 전진시키지 않습니다. PCM SHA-256·언어·분할 설정·엔진/모델 파일 식별 정보를 확인한 결과만 재사용합니다. 모델은 경로·크기·수정 시각·inode로 식별하므로 실행 중 덮어쓰지 않아야 합니다. 같은 작업 폴더의 중복 처리는 파일 잠금으로 막습니다.
+
+전사 오류는 녹음을 중단하지 않고 30초 뒤 재시도합니다. 미완성 WAV 헤더는 별도 audio-local-recovered.wav로 복구하며 원본은 덮어쓰지 않습니다. 이전 앱의 live-asr 녹음 복구도 유지합니다.
+
+교정·분석보다 전사 원문을 먼저 저장합니다. Codex 연결이 없어도 전사·따라읽기는 완료합니다. 앱 실행 시 Sol 우선·Luna 대체로 모델을 선택하고, 전체 교정은 원문 맥락과 제한된 문장 ID 묶음을 사용하며 모델별로 캐시합니다. 강조 분석은 실제 발화의 강조 근거와 원문 인용을 검증합니다.
+
+Whisper 전사는 모델 설치 이후 계정·인터넷·API 비용이 필요 없습니다. Codex는 텍스트 교정·제목·핵심 요약에만 사용하며 계정 한도가 적용됩니다. 이전 내부 받아쓰기·MMS 구현은 과거 비교·복구용으로 남아 있지만 현재 제품 전사 경로에서는 호출하지 않습니다.
+
+## 준비와 빌드
+
+macOS 14+, Swift 6, Homebrew가 필요합니다. whisper.cpp 1.9.5에서 검증했습니다.
+
+```sh
+brew install whisper.cpp ffmpeg
+./scripts/setup-engine.sh
+swift test
+./scripts/build-app.sh
+```
+
+설치 스크립트는 SPM 의존성을 받은 뒤 전사 코어의 모델 설치 스크립트에 위임합니다. 기본 위치는 ~/Library/Application Support/Doongdoong/Models이며 기존 Sori/Models의 Turbo 모델도 재사용합니다. SHA-256을 검증하고 MMS·Python은 설치하지 않습니다. 기존 모델은 자동 삭제하지 않습니다.
+
+독립 CLI는 코어의 doongdoong-transcribe, 앱 저장소의 호환 명령은 DoongdoongTranscribe입니다. 인자는 AUDIO OUTPUT_DIRECTORY WHISPER_SERVER MODEL VAD [LANGUAGE]이며 교정이나 로그인은 실행하지 않습니다.
+
+--library는 격리된 라이브러리, --demo --snapshot은 창 없는 렌더링입니다. --integration-report는 창·마이크 없이 전사부터 Codex 분석까지 검사하므로 로그인과 계정 한도가 필요합니다.
+
+## 데이터 보관
+
+기본 위치는 ~/Music/둥둥이이며 기존 붕붕이·Sori 라이브러리도 읽습니다. 처리 중에는 이동·삭제를 제한하고 메타데이터를 원자적으로 저장합니다.
+
+```text
+녹음 폴더/
+├── audio.wav                    # 원본 PCM
+├── recording.json               # 제목·문장·메모·파형·핵심 요약
+├── local-transcription/         # 구간별 원문·시각·PCM 해시·재개 기록
+├── local-asr-original.json       # 합친 원문과 타임스탬프
+├── audio-local-recovered.wav    # 중단된 녹음 복구 시에만 생성
+├── final-review.json            # 검증된 교정 결과
+├── final-review.json.parts/     # 완료한 교정 묶음
+├── processing-times.json        # 단계별 시간
+└── transcript-history/          # 재처리 전 기존 기록
+```
+
+[이번 검증](validation-local-transcription.ko.md) · [이전 파일 전사 검증](validation-codex-file-transcription.ko.md) · [외부 구성요소](third-party-notices.md)
+
+외부 배포용 서명·공증, 화자 분리, 시스템 오디오 녹음, 단어 단위 정렬은 현재 지원하지 않습니다.
 
 ## 녹음과 읽기
 
@@ -28,45 +83,6 @@ Codex 교정은 `--model gpt-6.1-sol`과 `model_reasoning_effort="medium"`을 �
 - TXT·SRT·JSON 내보내기, macOS 휴지통으로 삭제.
 
 `도움말 → 샘플 녹음으로 둘러보기`는 미리 준비한 합성 음성과 텍스트를 사용합니다. 샘플 열기는 새 AI 작업을 실행하지 않습니다. 실제 엔진 검증은 별도 통합 검사로 수행합니다.
-
-## 준비와 빌드
-
-Xcode Command Line Tools, `whisper-cli`, FFmpeg, 로그인된 Codex CLI가 필요합니다. 기존 엔진 설치가 없다면 `brew install whisper-cpp ffmpeg`로 준비합니다. Codex는 ChatGPT 계정으로 로그인합니다. 별도 Python 런타임이나 WebRTC helper는 앱에 포함하지 않습니다.
-
-```sh
-./scripts/setup-engine.sh  # large-v3-turbo FP16 + Silero 음성 감지 모델; SHA-256 검증 후 설치
-swift test
-./scripts/build-app.sh
-python3 scripts/verify-ui.py --skip-build
-./scripts/verify-integration.sh
-```
-
-모델 기본 폴더는 `~/Library/Application Support/Sori/Models`입니다. 음성 처리 모델 `ggml-large-v3-turbo.bin`(약 1.62 GB)과 음성 감지 모델 `ggml-silero-v6.2.0.bin`(885,098 바이트)을 사용합니다. 기존 전사 모델이 있어도 준비 스크립트를 다시 실행하면 음성 감지 모델을 추가하며, 두 파일 모두 SHA-256을 검증한 뒤 원자적으로 설치합니다. 이전 기본 `small` 설정은 새 기본 모델로 이관하며, 다른 사용자 지정 경로는 보존합니다. 모델은 실행마다 다운로드하지 않습니다.
-
-`--library /absolute/path`는 별도 라이브러리를 사용합니다. `--demo --snapshot /absolute/path.png`는 창을 표시하지 않고 렌더링한 뒤 종료합니다. `--integration-report`도 창과 마이크를 열지 않습니다. 일반 앱과 검증 경로 모두 강제 활성화하지 않습니다.
-
-## 데이터 보관
-
-새 라이브러리는 `~/Music/둥둥이`입니다. 기존 `~/Music/붕붕이` 또는 `~/Music/Sori`가 있으면 해당 자료를 이동하거나 복제하지 않고 이어 사용합니다. 앱 이름은 둥둥이이며, 기존 설정·마이크 권한을 유지하기 위해 번들 식별자와 내부 실행 파일 이름은 유지합니다.
-
-새 녹음 버튼과 ⌘R은 저장 폴더 선택창을 엽니다. 폴더를 선택하고 녹음 시작을 눌러야 마이크를 사용하며, 선택창에서 새 폴더를 만들 수도 있습니다. 왼쪽 폴더는 녹음 목록을 펼치고 접는 탐색기로 동작합니다. 녹음을 다른 폴더로 끌어 옮기면 오디오·전사문·핵심 요약·메모를 담은 작업 디렉터리를 함께 이동합니다. 녹음 또는 처리 중인 항목은 이동할 수 없습니다. 모든 녹음과 즐겨찾기에서는 별도 목록의 검색·정렬·필터를 사용할 수 있습니다.
-
-```text
-작업 이름--프로젝트ID/
-├── project.json
-└── 녹음시각--녹음ID/
-    ├── audio.wav                # 16 kHz, mono, PCM16
-    ├── recording.json           # 제목, 문장, 시간, 메모, 북마크, 파형
-    ├── whisper-original.json    # 음성 인식 원문과 구간 시간
-    ├── codex-corrections.json    # 검증된 텍스트 교정 결과
-    └── import.log               # 가져온 파일의 변환 진단
-```
-
-이전 녹음과 전사 파일을 삭제하지 않습니다. 인증정보는 Codex CLI가 관리하며 앱이 토큰 파일을 직접 읽거나 기록하지 않습니다. 교정에는 격리된 임시 작업 폴더와 읽기 전용 실행을 사용하고, 전사문 속 명령은 실행 지시로 취급하지 않습니다.
-
-메타데이터는 원자적으로 저장합니다. 처리 중인 파일의 이동·삭제를 제한하고, 취소·오류 시 원본 음성과 기존 텍스트를 보존합니다. 종료할 때 녹음과 메모를 저장하며, 디스크 쓰기에 실패하면 최신 편집을 메모리에 유지하고 종료를 보류합니다.
-
-이미 정리된 녹음을 다시 처리해 음성이 감지되지 않으면, 이전 녹음 메타데이터 전체를 `transcript-history/<UUID>.json`에 먼저 백업하고 현재 결과를 음성 없음으로 바꿉니다. 원본 음성은 그대로 보관합니다.
 
 ## 단축키
 
@@ -81,7 +97,3 @@ python3 scripts/verify-ui.py --skip-build
 | 북마크 | ⌘B |
 | 집중 모드 | ⇧⌘L |
 | 설정 | ⌘, |
-
-[검증 기록](validation.md) · [UI 레퍼런스](design-references.md) · [로고 원본](../assets/brand/mark.svg)
-
-이 Mac에서 실행하는 ad-hoc 서명 빌드입니다. 외부 배포용 서명·공증, 시스템 오디오 녹음, 화자 분리, 정밀 단어 정렬은 포함하지 않습니다. `.local/archive`와 음성 전송 실험 스크립트는 과거 실험이며 제품 실행·빌드에서 사용하지 않습니다.

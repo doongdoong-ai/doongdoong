@@ -1,78 +1,78 @@
 import Foundation
 import XCTest
 import SoriCore
+import DoongdoongTranscription
 @testable import SoriApp
 
+private actor StubRecognizer: SpeechRecognizer {
+    var calls = 0
+    let invalid: Bool
+    init(invalid: Bool = false) { self.invalid = invalid }
+    func transcribe(wave: Data, configuration: WhisperConfiguration) async throws -> [SpeechSegment] {
+        calls += 1
+        return [.init(start: 0, end: invalid ? 100 : 1, text: "원문 그대로 보관합니다.")]
+    }
+}
+
 final class TranscriptionPipelineTests: XCTestCase {
-    /// Exercise CLI/file boundaries without loading a model or making network requests.
-    private func fixture() throws -> (URL, String) {
+    @MainActor private func fixture() throws -> (URL, URL, PipelineSettings) {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("doongdoong-pipeline-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let executable = root.appendingPathComponent("whisper")
-        let script = #"""
-        #!/bin/sh
-        compact=no
-        while [ "$#" -gt 0 ]; do
-          case "$1" in
-            -oj) compact=yes ;;
-            -ojf) exit 91 ;;
-            -of) shift; output="$1" ;;
-            -f) shift; input="$1" ;;
-          esac
-          shift
-        done
-        [ "$compact" = yes ] || exit 92
-        cp "$input" "$output.json"
-        """#
-        try script.write(to: executable, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
-        return (root, executable.path)
+        let audio = root.appendingPathComponent("audio.wav")
+        var data = Data("RIFF".utf8)
+        func u32(_ v: UInt32) { var v = v.littleEndian; withUnsafeBytes(of: &v) { data.append(contentsOf: $0) } }
+        func u16(_ v: UInt16) { var v = v.littleEndian; withUnsafeBytes(of: &v) { data.append(contentsOf: $0) } }
+        u32(32036); data.append(Data("WAVEfmt ".utf8)); u32(16); u16(1); u16(1); u32(16000); u32(32000); u16(2); u16(16)
+        data.append(Data("data".utf8)); u32(32000)
+        for index in 0..<16000 { u16(UInt16(bitPattern: Int16(sin(Double(index) * 0.1) * 10000))) }
+        try data.write(to: audio)
+        let model = root.appendingPathComponent("model.bin"); try Data([1]).write(to: model)
+        let config = WhisperConfiguration(executable: URL(fileURLWithPath: "/usr/bin/true"), model: model, vadModel: model)
+        return (root, audio, PipelineSettings(codex: "/usr/bin/false", ffmpeg: "/usr/bin/false", language: "ko", transcription: config))
     }
 
-    @MainActor func testMalformedOutputIsPreservedBeforeDecodingFails() async throws {
-        let (root, executable) = try fixture()
+    @MainActor func testInvalidTimestampsAreNotPublishedAndOriginalAudioIsUntouched() async throws {
+        let (root, audio, settings) = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }
-        let audio = root.appendingPathComponent("audio.wav")
-        let raw = Data("{broken".utf8)
-        try raw.write(to: audio)
-        let settings = PipelineSettings(whisper: executable, model: executable, vadModel: executable,
-                                        codex: "/usr/bin/false", ffmpeg: "", language: "ko")
+        let original = try Data(contentsOf: audio)
         do {
-            _ = try await TranscriptionPipeline.transcribe(audio: audio, directory: root, duration: 4100,
-                                                           settings: settings, onTranscribed: { _ in
-                XCTFail("Malformed output must never be published")
-            })
-            XCTFail("Expected transcription failure")
+            _ = try await TranscriptionPipeline.transcribe(audio: audio, directory: root, duration: 1, settings: settings,
+                recognizer: StubRecognizer(invalid: true), onTranscribed: { _ in XCTFail("Invalid timestamps published") })
+            XCTFail("Expected failure")
         } catch {
-            XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("whisper-original.json")), raw)
-            let diagnostic = try JSONSerialization.jsonObject(with: Data(contentsOf: root.appendingPathComponent("processing.json"))) as? [String: Any]
-            XCTAssertEqual(diagnostic?["phase"] as? String, "transcription")
-            XCTAssertEqual(diagnostic?["decodingKind"] as? String, "dataCorrupted")
+            XCTAssertEqual(try Data(contentsOf: audio), original)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("local-asr-original.json").path))
         }
     }
 
-    @MainActor func testLongTranscriptPublishedBeforeCorrectionAndSurvivesItsFailure() async throws {
-        let (root, executable) = try fixture()
+    @MainActor func testNoCodexStillProducesTranscriptAndClickableTimestampsWithoutRepeatingASR() async throws {
+        let (root, audio, settings) = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }
-        let audio = root.appendingPathComponent("audio.wav")
-        let entries: [[String: Any]] = (0..<2100).map { index in
-            ["offsets": ["from": index * 2000, "to": (index + 1) * 2000], "text": "강의 문장 \(index)"]
-        }
-        let raw = try JSONSerialization.data(withJSONObject: ["transcription": entries])
-        try raw.write(to: audio)
-        let settings = PipelineSettings(whisper: executable, model: executable, vadModel: executable,
-                                        codex: "/usr/bin/false", ffmpeg: "", language: "ko")
+        let backend = StubRecognizer()
         var published: [TranscriptSegment] = []
-        let result = try await TranscriptionPipeline.transcribe(audio: audio, directory: root, duration: 4200,
-                                                               settings: settings, onTranscribed: { segments in
-            XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("whisper-original.json")), raw)
-            XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("processing.json").path))
-            published = segments
-        })
-        guard case .transcribed(let segments, _, let warning) = result else { return XCTFail("Expected preserved transcript") }
-        XCTAssertEqual(segments.count, 2100)
-        XCTAssertEqual(segments, published)
-        XCTAssertEqual(segments.last?.end, 4200)
-        XCTAssertNotNil(warning)
+        for _ in 0..<2 {
+            let result = try await TranscriptionPipeline.transcribe(audio: audio, directory: root, duration: 1, settings: settings,
+                recognizer: backend, onTranscribed: { published = $0 })
+            guard case .transcribed(let saved, let lecture, let warning, _) = result else { return XCTFail("Expected transcript") }
+            XCTAssertEqual(saved, published)
+            XCTAssertEqual(saved.first?.text, "원문 그대로 보관합니다.")
+            XCTAssertEqual(saved.first?.timingQuality, "whisper")
+            XCTAssertEqual(Transcript.activeID(at: 0.5, in: saved), 0)
+            XCTAssertNil(lecture); XCTAssertNotNil(warning)
+        }
+        let calls = await backend.calls; XCTAssertEqual(calls, 1)
+    }
+
+    @MainActor func testAnalysisFailurePreservesLocalTranscript() async throws {
+        let (root, audio, base) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let settings = PipelineSettings(codex: "/usr/bin/false", ffmpeg: base.ffmpeg, language: base.language,
+                                        aiModel: .sol, transcription: base.transcription)
+        let result = try await TranscriptionPipeline.transcribe(audio: audio, directory: root, duration: 1,
+            settings: settings, recognizer: StubRecognizer())
+        guard case .transcribed(let saved, let lecture, let warning, _) = result else { return XCTFail("Expected saved transcript") }
+        XCTAssertEqual(saved.first?.originalText, "원문 그대로 보관합니다.")
+        XCTAssertEqual(saved.last?.end, 1)
+        XCTAssertNil(lecture); XCTAssertNotNil(warning)
     }
 }

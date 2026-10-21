@@ -28,6 +28,7 @@ SCENARIOS = (
     ("empty-search", ("--minimum-window", "--transcript-preview", "--empty-search-preview"), True, (2000, 1340)),
     ("processing", ("--processing-preview",), True, (2560, 1640)),
     ("polishing", ("--polishing-preview",), True, (2560, 1640)),
+    ("review", ("--minimum-window", "--transcript-preview", "--review-preview"), True, (2000, 1340)),
 )
 
 

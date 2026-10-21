@@ -1,13 +1,17 @@
 import Foundation
 import Darwin
 
-/// A bounded JSON-RPC connection. Codex owns authentication; this client never reads credentials.
+/// A bounded JSON-RPC connection. Codex owns authentication; no credential files or RPC payloads are logged.
 @MainActor
-final class CodexAppServerClient: NSObject {
-    var onNotification: ((String, [String: Any]) -> Void)?
-    var onFailure: ((Error) -> Void)?
+public final class CodexAppServerClient: NSObject {
+    public var onNotification: ((String, [String: Any]) -> Void)?
+    public var onFailure: ((Error) -> Void)?
+    public var onTranscriptionTool: (([String: Any]) async throws -> [String: Any])?
+    public override init() { super.init() }
+    private var toolTasks: [UUID: Task<Void, Never>] = [:]
+    private var allowsTranscription = false
 
-    var isRunning: Bool { transport?.isRunning == true }
+    public var isRunning: Bool { transport?.isRunning == true }
 
     private static let maximumMessageBytes = 4 * 1024 * 1024
     private var transport: CodexPipeTransport?
@@ -21,7 +25,7 @@ final class CodexAppServerClient: NSObject {
     }
 
     /// Launch a JSON-RPC helper without sending Codex-specific initialization.
-    func launch(executable: URL, arguments: [String], workingDirectory: URL) throws {
+    public func launch(executable: URL, arguments: [String], workingDirectory: URL) throws {
         guard transport == nil else { throw ClientError.message("이미 Codex 연결이 실행 중입니다.") }
         guard FileManager.default.isExecutableFile(atPath: executable.path) else {
             throw ClientError.message("실행 파일을 찾을 수 없습니다. 설정에서 경로를 확인해 주세요.")
@@ -45,7 +49,7 @@ final class CodexAppServerClient: NSObject {
     }
 
     /// Start the installed Codex CLI for account checks; it owns authentication.
-    func start(executable: URL, workingDirectory: URL) async throws {
+    public func start(executable: URL, workingDirectory: URL, transcription: Bool = false) async throws {
         try Task.checkCancellation()
         // app-server 0.160 does not support exec's --ignore-user-config switch.
         // Keep Codex's existing login while disabling executable hooks and agent tools.
@@ -56,15 +60,22 @@ final class CodexAppServerClient: NSObject {
             "features.plugins=false",
             "features.apps=false",
             "features.shell_tool=false",
-            "features.multi_agent=false"
+            "features.multi_agent=false", "features.multi_agent_v2=false",
+            "features.code_mode=false", "features.unified_exec=false",
+            "features.memories=false", "features.view_image=false",
+            "features.image_generation=false", "features.in_app_browser=false",
+            "features.skill_search=false", "features.skip_host_skill_discovery=true",
+            "skills.include_instructions=false", "skills.bundled.enabled=false",
+            "project_doc_max_bytes=0", "mcp_servers={}"
         ]
         let arguments = ["app-server", "--stdio"] + overrides.flatMap { ["-c", $0] }
         try launch(executable: executable, arguments: arguments, workingDirectory: workingDirectory)
+        allowsTranscription = transcription
         do {
             _ = try await request(method: "initialize", params: [
                 "clientInfo": ["name": "bungbungi", "title": "둥둥이", "version": "1.0"],
                 "capabilities": [
-                    "experimentalApi": false,
+                    "experimentalApi": transcription,
                     "requestAttestation": false,
                     "explicitGatewayOauth": true
                 ]
@@ -78,7 +89,7 @@ final class CodexAppServerClient: NSObject {
 
     /// Requests may overlap; IDs associate each response with its own continuation.
     /// Cancelling or timing out any request closes this operation's connection.
-    func request(method: String, params: [String: Any], timeout: TimeInterval = 30) async throws -> [String: Any] {
+    public func request(method: String, params: [String: Any], timeout: TimeInterval = 30) async throws -> [String: Any] {
         try Task.checkCancellation()
         guard let transport, transport.isRunning else { throw ClientError.disconnected }
         guard timeout.isFinite, timeout > 0, timeout <= 86_400 else {
@@ -117,7 +128,7 @@ final class CodexAppServerClient: NSObject {
     }
 
     /// Writes are serialized with requests, including the initialized notification.
-    func notify(method: String, params: [String: Any]? = nil) throws {
+    public func notify(method: String, params: [String: Any]? = nil) throws {
         guard let transport, transport.isRunning else { throw ClientError.disconnected }
         var message: [String: Any] = ["method": method]
         if let params { message["params"] = params }
@@ -133,7 +144,7 @@ final class CodexAppServerClient: NSObject {
     }
 
     /// Idempotent cancellation.
-    func stop() {
+    public func stop() {
         close(with: CancellationError())
     }
 
@@ -165,7 +176,30 @@ final class CodexAppServerClient: NSObject {
     private func receive(_ message: [String: Any]) throws {
         if let method = message["method"] as? String {
             if let id = message["id"], !(id is NSNull) {
-                // Never grant a tool, approval, authentication, or credential request.
+                if allowsTranscription, method == "item/tool/call",
+                   let params = message["params"] as? [String: Any],
+                   params["tool"] as? String == "transcribe_recording",
+                   let handler = onTranscriptionTool {
+                    let taskID = UUID(), token = generation
+                    toolTasks[taskID] = Task { [weak self] in
+                        guard let self else { return }
+                        defer { self.toolTasks.removeValue(forKey: taskID) }
+                        do {
+                            let result = try await handler(params)
+                            try Task.checkCancellation()
+                            guard self.generation == token, let transport = self.transport else { return }
+                            let data = try self.encoded(["id": id, "result": result])
+                            transport.write(data) { [weak self] error in
+                                if let error { Task { @MainActor in self?.fail(error) } }
+                            }
+                        } catch {
+                            guard self.generation == token else { return }
+                            self.fail(error)
+                        }
+                    }
+                    return
+                }
+                // Reject every other tool, approval, authentication or credential request.
                 let denial: [String: Any] = [
                     "id": id,
                     "error": ["code": -32601, "message": "This client only transcribes recorded audio and refuses server requests."]
@@ -179,10 +213,11 @@ final class CodexAppServerClient: NSObject {
                 return
             }
             let params = message["params"] as? [String: Any] ?? [:]
-            if method == "turn/started" { throw ClientError.unexpectedAction }
+            if method == "turn/started" && !allowsTranscription { throw ClientError.unexpectedAction }
             if method == "item/started" || method == "item/completed" {
                 let kind = (params["item"] as? [String: Any])?["type"] as? String
-                if let kind, !["userMessage", "agentMessage", "reasoning"].contains(kind) {
+                let allowed = ["userMessage", "agentMessage", "reasoning"] + (allowsTranscription ? ["dynamicToolCall"] : [])
+                if let kind, !allowed.contains(kind) {
                     throw ClientError.unexpectedAction
                 }
             }
@@ -230,6 +265,9 @@ final class CodexAppServerClient: NSObject {
         generation = UUID()
         let connection = transport
         transport = nil
+        let tasks = toolTasks.values
+        toolTasks.removeAll()
+        for task in tasks { task.cancel() }
         let requests = pending.values
         pending.removeAll()
         for request in requests {
@@ -282,6 +320,9 @@ private final class CodexPipeTransport: @unchecked Sendable {
         environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:" + (environment["PATH"] ?? "")
         environment.removeValue(forKey: "CODEX_THREAD_ID")
         environment.removeValue(forKey: "CODEX_INTERNAL_ORIGINATOR_OVERRIDE")
+        for key in ["OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_ORG_ID", "OPENAI_PROJECT_ID", "CODEX_API_KEY", "AZURE_OPENAI_API_KEY", "ANTHROPIC_API_KEY"] {
+            environment.removeValue(forKey: key)
+        }
         process.environment = environment
         _ = fcntl(input.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
         try process.run()

@@ -41,6 +41,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             captureOffscreen(args: args, path: args[index + 1])
             return
         }
+        store.settings.refreshAIConnection()
         buildMenu()
         let minimum = args.contains("--minimum-window")
         let frame = NSRect(x: 0, y: 0, width: minimum ? 1000 : 1280, height: minimum ? 670 : 820)
@@ -89,6 +90,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                 self.store.recordings[index].segments = []
                 self.store.processingID = id
                 self.store.progressDetail = "AI가 녹음을 정리하고 있어요"
+            }
+            if args.contains("--review-preview"), let id = self.store.selectedID,
+               let index = self.store.recordings.firstIndex(where: { $0.id == id }) {
+                self.store.recordings[index].status = .reviewNeeded
+                self.store.recordings[index].reviewRanges = [.init(start: 10, end: 12)]
+                self.store.recordings[index].message = "일부 문장은 정확한 재생 위치를 확인하지 못해 대략적인 위치로 표시했습니다."
+                if !self.store.recordings[index].segments.isEmpty {
+                    self.store.recordings[index].segments[0].timingQuality = "approximate"
+                }
             }
             let settings = args.contains("--settings-preview")
             let search = args.contains("--search-preview") || args.contains("--empty-search-preview")
