@@ -84,8 +84,12 @@ public final class ProcessRunner: @unchecked Sendable {
                             let output = Self.tail(of: log)
                             throw SoriError.message("\(executable.lastPathComponent) 실행 실패 (\(task.terminationStatus))\n\(output.suffix(1600))")
                         }
-                        continuation.resume()
-                    } catch { continuation.resume(throwing: error) }
+                    } catch {
+                        continuation.resume(throwing: error)
+                        return
+                    }
+                    // Finish deferred cleanup and clear active before waking the caller.
+                    continuation.resume()
                 }
             }
         } onCancel: { self.cancel() }
