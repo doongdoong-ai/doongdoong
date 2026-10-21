@@ -63,7 +63,8 @@ struct SettingsView: View {
                 .overlay(RoundedRectangle(cornerRadius: 12).stroke(SoriTheme.ink.opacity(0.08), lineWidth: 1))
 
             Toggle("녹음 후 AI로 교정·요약", isOn: $settings.analysisEnabled).toggleStyle(.switch).controlSize(.small)
-            caption("전사는 Mac에서 처리합니다. Codex에는 전사된 텍스트를 보내며, CLI에 로그인한 ChatGPT 계정을 사용합니다.")
+            caption("전사는 Mac에서 처리하고, 전사문은 AI 교정이 끝난 뒤 표시합니다. Codex에는 텍스트를 보내며, CLI에 로그인한 ChatGPT 계정을 사용합니다.")
+            if !settings.analysisEnabled { caption("꺼 두면 음성과 처리 기록을 보관합니다. 전사문을 보려면 AI 교정을 켜고 이어서 정리해 주세요.") }
 
             VStack(alignment: .leading, spacing: 11) {
                 HStack(spacing: 12) {
