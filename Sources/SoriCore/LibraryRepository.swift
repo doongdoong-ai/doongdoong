@@ -37,11 +37,7 @@ public final class LibraryRepository {
                         let parentChanged = recording.projectID != project.id
                         recording.projectID = project.id
                         var needsRecovery = parentChanged
-                        if recording.status == .recording || recording.status.isProcessing {
-                            recording.status = recording.segments.isEmpty ? .queued : recording.completedStatus
-                            recording.message = "이전 작업이 중단되었습니다. 저장된 오디오로 다시 전사할 수 있습니다."
-                            needsRecovery = true
-                        }
+                        needsRecovery = recording.recoverInterruptedWork() || needsRecovery
                         if needsRecovery {
                             // Readable recordings remain visible even when the volume is full or read-only.
                             do { try write(recording, to: path) }
@@ -122,7 +118,7 @@ public final class LibraryRepository {
 
     public func audioURL(for recording: Recording) throws -> URL {
         let name = recording.audioFileName ?? "audio.wav"
-        guard ["audio.wav", "audio-recovered.wav"].contains(name) else { throw SoriError.message("녹음 파일 경로를 확인해 주세요.") }
+        guard ["audio.wav", "audio-recovered.wav", "audio-local-recovered.wav"].contains(name) else { throw SoriError.message("녹음 파일 경로를 확인해 주세요.") }
         return try directory(for: recording).appendingPathComponent(name)
     }
 

@@ -1,7 +1,7 @@
 import SwiftUI
 import SoriCore
 
-/// Stage progress is measured work, never a guessed whole-job percentage.
+/// Audio progress is measured; model inference has an explicitly labeled clock estimate.
 struct ProcessingProgressView: View {
     @Bindable var store: AppStore
     let recordingID: UUID
@@ -36,7 +36,17 @@ struct ProcessingProgressView: View {
             }
             if !waiting, let progress {
                 VStack(alignment: .leading, spacing: 8) {
-                    if let fraction = progress.fraction {
+                    if let expected = progress.estimatedDuration, let started = store.processingStepStartedUptime {
+                        TimelineView(.periodic(from: .now, by: 0.25)) { _ in
+                            let fraction = CorrectionProgressEstimate.fraction(elapsed: ProcessInfo.processInfo.systemUptime - started, expectedDuration: expected)
+                            VStack(alignment: .leading, spacing: 8) {
+                                ProgressView(value: fraction).progressViewStyle(.linear).tint(SoriTheme.ink)
+                                    .animation(.linear(duration: 0.3), value: fraction)
+                                    .accessibilityLabel("교정 예상 진행률")
+                                Text("예상 진행률").font(.system(size: 13)).foregroundStyle(SoriTheme.secondary)
+                            }
+                        }
+                    } else if let fraction = progress.fraction {
                         ProgressView(value: fraction).progressViewStyle(.linear).tint(SoriTheme.ink)
                             .accessibilityLabel(progress.stage.step.title + " 진행률")
                         if let label = progress.countLabel {
@@ -58,7 +68,7 @@ struct ProcessingProgressView: View {
                                     .font(.system(size: 15)).frame(width: 18)
                                 Text(step.title).font(.system(size: 14, weight: current ? .medium : .regular))
                                 Spacer()
-                                if issue { Text(step == .correction ? "원문 유지" : "재시도 필요").font(.system(size: 12)) }
+                                if issue { Text("재시도 필요").font(.system(size: 12)) }
                                 else if complete { Text("완료").font(.system(size: 12)) }
                             }.foregroundStyle(issue ? Color.orange : current || complete ? SoriTheme.ink : SoriTheme.secondary.opacity(0.65))
                         }

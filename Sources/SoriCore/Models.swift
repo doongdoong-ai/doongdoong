@@ -76,6 +76,7 @@ public struct Recording: Codable, Identifiable, Equatable, Sendable {
     public var lectureHighlights: [LectureHighlight]?
     public var reviewRanges: [AudioReviewRange]?
     public var audioFileName: String?
+    public var work: RecordingWork?
 
     public init(id: UUID = UUID(), projectID: UUID, title: String, createdAt: Date = Date()) {
         self.id = id; self.projectID = projectID; self.title = title; self.createdAt = createdAt

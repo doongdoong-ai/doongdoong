@@ -6,6 +6,10 @@ import DoongdoongTranscription
 public enum LocalTranscription {
     public static let engine = WhisperEngine()
 
+    public static func prepareRecording(directory: URL) throws {
+        try TranscriptionSession.prepareRecording(directory: directory)
+    }
+
     public static func transcribe(audio: URL, directory: URL, configuration: WhisperConfiguration,
                                   recognizer: any SpeechRecognizer = engine,
                                   onProgress: (@Sendable (TranscriptionProgress) async -> Void)? = nil) async throws -> [TranscriptSegment] {

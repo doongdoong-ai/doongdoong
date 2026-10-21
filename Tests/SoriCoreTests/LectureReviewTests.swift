@@ -107,7 +107,7 @@ final class LectureReviewTests: XCTestCase {
                                                    to: source, editableIDs: [0]))
     }
 
-    func testAllBatchesSeeEndOfLectureAndCacheIsBoundToExactRevision() async throws {
+    func testWholeLectureUsesOneRequestAndCacheIsBoundToExactRevision() async throws {
         let directory = try root(); defer { try? FileManager.default.removeItem(at: directory) }
         let source = (0..<100).map { segment($0, "강의 문장 \($0) 그대로.") }
         let cache = directory.appendingPathComponent("review.json")
@@ -118,11 +118,10 @@ final class LectureReviewTests: XCTestCase {
             let object = try XCTUnwrap(JSONSerialization.jsonObject(with: request.input) as? [String: Any])
             let all = try XCTUnwrap(object["source"] as? [String: Any])
             XCTAssertEqual((all["segments"] as? [[String: Any]])?.last?["id"] as? Int, 99)
-            let current = try XCTUnwrap(object["editableSegments"] as? [String: Any])
-            covered += (current["segments"] as! [[String: Any]]).map { $0["id"] as! Int }
+            covered += try XCTUnwrap(object["editableIDs"] as? [Int])
             return self.noop
         }
-        XCTAssertEqual(calls, 3)
+        XCTAssertEqual(calls, 1)
         XCTAssertEqual(covered, Array(0..<100))
         XCTAssertEqual(outcome.segments, source)
         let cached = try await LectureReview.review(source, cacheURL: cache) { _ in XCTFail("Cache miss"); return self.noop }
@@ -130,7 +129,7 @@ final class LectureReviewTests: XCTestCase {
         var changed = source; changed[0].text += " 사용자가 고침"
         var refreshed = 0
         _ = try await LectureReview.review(changed, cacheURL: cache) { _ in refreshed += 1; return self.noop }
-        XCTAssertEqual(refreshed, 3)
+        XCTAssertEqual(refreshed, 1)
     }
 
     func testChangingModelInvalidatesFinalAndPartialReviewCaches() async throws {
@@ -147,7 +146,7 @@ final class LectureReviewTests: XCTestCase {
             XCTAssertEqual(receipt["model"] as? String, model)
             XCTAssertEqual(receipt["effort"] as? String, "medium")
         }
-        XCTAssertEqual(calls, 4)
+        XCTAssertEqual(calls, 2)
         let cached = try await LectureReview.review(source, cacheURL: cache, identity: .init(provider: "codex", model: "gpt-6-luna", reasoningEffort: "medium")) { _ in
             XCTFail("Same model must reuse its cache"); return self.noop
         }
@@ -155,41 +154,77 @@ final class LectureReviewTests: XCTestCase {
         XCTAssertEqual(cached.segments, source)
     }
 
-    func testLargeLectureVisitsEveryContextPartAndEverySentence() async throws {
+    func testLargeLectureStillSendsAllTextInOneRequest() async throws {
         let directory = try root(); defer { try? FileManager.default.removeItem(at: directory) }
-        let source = (0..<400).map { segment($0, String(repeating: "긴 강의 문장입니다. ", count: 20) + "끝 \($0)") }
-        var contextIDs: [Int] = [], reviewedIDs: [Int] = []
+        let source = (0..<400).map { segment($0, String(repeating: "Lecture text ", count: 40) + "end \($0)") }
+        var calls = 0
         _ = try await LectureReview.review(source, cacheURL: directory.appendingPathComponent("review.json")) { request in
+            calls += 1
             let object = try XCTUnwrap(JSONSerialization.jsonObject(with: request.input) as? [String: Any])
-            if request.instructions == LectureReviewPrompts.context {
-                contextIDs += (object["segments"] as! [[String: Any]]).map { $0["id"] as! Int }
-                return Data(#"{"complete":true,"terms":[]}"#.utf8)
-            }
-            XCTAssertNil(object["source"])
-            XCTAssertEqual(object["allPartsReviewed"] as? Bool, true)
-            let target = object["editableSegments"] as! [String: Any]
-            reviewedIDs += (target["segments"] as! [[String: Any]]).map { $0["id"] as! Int }
+            let full = try XCTUnwrap(object["source"] as? [String: Any])
+            XCTAssertEqual((full["segments"] as? [[String: Any]])?.count, 400)
+            XCTAssertEqual(object["editableIDs"] as? [Int], Array(0..<400))
             return self.noop
         }
-        XCTAssertEqual(contextIDs, Array(0..<400))
-        XCTAssertEqual(reviewedIDs, Array(0..<400))
+        XCTAssertEqual(calls, 1)
     }
 
-    func testLateFailureDoesNotCommitPartialReviewAndInvalidResponsesRetryOnlyOnce() async throws {
+    func testLateFailureDoesNotPublishPartialReviewAndInvalidResponsesRetryOnlyOnce() async throws {
         let directory = try root(); defer { try? FileManager.default.removeItem(at: directory) }
         let cache = directory.appendingPathComponent("review.json")
-        let source = (0..<50).map { segment($0, "같은 말을 그대로 보존합니다.") }
+        let source = (0..<50).map { segment($0, "Preserve sentence \($0).") }
         var calls = 0
         do {
             _ = try await LectureReview.review(source, cacheURL: cache) { _ in
                 calls += 1
-                return calls == 1 ? self.noop : Data(#"{"complete":false,"edits":[]}"#.utf8)
+                if calls == 1 { throw TextGenerationError.capacityExceeded }
+                return calls == 2 ? self.noop : Data("{}".utf8)
             }
             XCTFail("Should fail")
         } catch {
-            XCTAssertEqual(calls, 3)
+            XCTAssertEqual(calls, 4)
             XCTAssertFalse(FileManager.default.fileExists(atPath: cache.path))
         }
+    }
+
+    func testCapacityFallbackRecursivelyHalvesWithoutMissingOrDuplicatingIDs() async throws {
+        let directory = try root(); defer { try? FileManager.default.removeItem(at: directory) }
+        let source = (0..<16).map { segment($0, "Preserve sentence \($0).") }
+        var requests: [[Int]] = [], covered: [Int] = [], progress: [Int] = []
+        let result = try await LectureReview.review(source, cacheURL: directory.appendingPathComponent("review.json"),
+            onProgress: { progress.append($0.completed) }) { request in
+            let payload = try JSONSerialization.jsonObject(with: request.input) as! [String: Any]
+            let ids = payload["editableIDs"] as! [Int]; requests.append(ids)
+            if ids.count > 4 { throw TextGenerationError.capacityExceeded }
+            covered += ids
+            return self.noop
+        }
+        XCTAssertEqual(requests.first, Array(0..<16))
+        XCTAssertEqual(requests.count, 7)
+        XCTAssertEqual(covered, Array(0..<16))
+        XCTAssertEqual(progress, progress.sorted())
+        XCTAssertEqual(progress.last, 16)
+        XCTAssertEqual(result.segments, source)
+    }
+
+    func testLocalInputLimitHalvesAndSingleSentenceCapacityFailureStops() async throws {
+        let directory = try root(); defer { try? FileManager.default.removeItem(at: directory) }
+        let source = (0..<200).map { segment($0, String(repeating: "a", count: 3000)) }
+        var covered: [Int] = [], calls = 0
+        _ = try await LectureReview.review(source, cacheURL: directory.appendingPathComponent("review.json")) { request in
+            calls += 1; XCTAssertLessThanOrEqual(request.input.count, 500_000)
+            let payload = try JSONSerialization.jsonObject(with: request.input) as! [String: Any]
+            covered += payload["editableIDs"] as! [Int]
+            return self.noop
+        }
+        XCTAssertEqual(calls, 2); XCTAssertEqual(covered, Array(0..<200))
+        calls = 0
+        do {
+            _ = try await LectureReview.review([segment(0, "one")], cacheURL: directory.appendingPathComponent("single.json")) { _ in
+                calls += 1; throw TextGenerationError.capacityExceeded
+            }
+            XCTFail("Must stop at an indivisible sentence")
+        } catch { XCTAssertEqual(calls, 1) }
     }
 
     func testCancellationAndTransportFailureAreNotRetriedOrCached() async throws {
@@ -246,7 +281,8 @@ final class LectureReviewTests: XCTestCase {
         do {
             _ = try await LectureReview.review(source, cacheURL: cache) { _ in
                 calls += 1
-                if calls == 2 { throw SoriError.message("offline") }
+                if calls == 1 { throw TextGenerationError.capacityExceeded }
+                if calls == 3 { throw SoriError.message("offline") }
                 return self.noop
             }
             XCTFail("Expected offline error")
@@ -255,8 +291,9 @@ final class LectureReviewTests: XCTestCase {
         let result = try await LectureReview.review(source, cacheURL: cache) { request in
             calls += 1
             let payload = try JSONSerialization.jsonObject(with: request.input) as! [String: Any]
-            let target = payload["editableSegments"] as! [String: Any]
-            XCTAssertEqual((target["segments"] as! [[String: Any]]).first!["id"] as? Int, 48)
+            let ids = payload["editableIDs"] as! [Int]
+            XCTAssertEqual(ids.first, 25)
+            XCTAssertEqual(ids.last, 49)
             return self.noop
         }
         XCTAssertEqual(calls, 1)

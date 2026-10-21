@@ -19,14 +19,18 @@ private actor StubRecognizer: SpeechRecognizer {
     let identity = TextProviderIdentity(provider: "test-vendor", model: "test-model", reasoningEffort: "test-effort")
     var requests = 0
     let invalid: Bool
+    var invalidAnalysis = false
+    var willGenerate: ((StructuredTextRequest) -> Void)?
     init(invalid: Bool = false) { self.invalid = invalid }
     func checkConnection() async throws {}
     func generate(_ request: StructuredTextRequest) async throws -> Data {
         requests += 1
+        willGenerate?(request)
         if invalid { return Data("{}".utf8) }
         if request.instructions == LectureReviewPrompts.correction {
             return Data(#"{"complete":true,"edits":[]}"#.utf8)
         }
+        if invalidAnalysis { return Data("{}".utf8) }
         return Data(#"{"title":"원문 보관","synopsis":"원문을 그대로 보관한다는 설명입니다.","highlights":[]}"#.utf8)
     }
 }
@@ -38,8 +42,13 @@ final class TranscriptionPipelineTests: XCTestCase {
         let original = try Data(contentsOf: audio)
         let provider = StubTextProvider()
         var progress: [ProcessingProgress] = []
+        var published = false
+        provider.willGenerate = { request in
+            XCTAssertEqual(published, request.instructions != LectureReviewPrompts.correction)
+        }
         let result = try await TranscriptionPipeline.transcribe(audio: audio, directory: root, duration: 1,
-            settings: settings, recognizer: StubRecognizer(), provider: provider, onProgress: { progress.append($0) })
+            settings: settings, recognizer: StubRecognizer(), provider: provider, onProgress: { progress.append($0) },
+            onReviewed: { _ in published = true })
         guard case .transcribed(let segments, let lecture, let warning, _) = result else { return XCTFail("Missing transcript") }
         XCTAssertEqual(provider.requests, 2)
         XCTAssertEqual(segments.first?.originalText, "원문 그대로 보관합니다.")
@@ -58,14 +67,14 @@ final class TranscriptionPipelineTests: XCTestCase {
         let (root, audio, settings) = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }
         var progress: [ProcessingProgress] = []
-        let result = try await TranscriptionPipeline.transcribe(audio: audio, directory: root, duration: 1,
+        do {
+        _ = try await TranscriptionPipeline.transcribe(audio: audio, directory: root, duration: 1,
             settings: settings, recognizer: StubRecognizer(), provider: StubTextProvider(invalid: true), onProgress: { progress.append($0) })
-        guard case .transcribed(let segments, let lecture, let warning, _) = result else { return XCTFail("Missing transcript") }
-        XCTAssertEqual(segments.first?.text, "원문 그대로 보관합니다.")
-        XCTAssertNil(lecture); XCTAssertNotNil(warning)
-        for stage: ProcessingProgress.Stage in [.correction, .analysis] {
-            XCTAssertTrue(progress.last(where: { $0.stage == stage })?.issue == true)
-            XCTAssertFalse(progress.contains { $0.stage == stage && $0.fraction == 1 })
+            XCTFail("Unreviewed transcript must never be returned")
+        } catch {
+            XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("local-asr-original.json").path))
+            XCTAssertTrue(progress.last(where: { $0.stage == .correction })?.issue == true)
+            XCTAssertFalse(progress.contains { $0.stage == .analysis || ($0.stage == .correction && $0.fraction == 1) })
         }
     }
     @MainActor private func fixture() throws -> (URL, URL, PipelineSettings) {
@@ -90,7 +99,7 @@ final class TranscriptionPipelineTests: XCTestCase {
         let original = try Data(contentsOf: audio)
         do {
             _ = try await TranscriptionPipeline.transcribe(audio: audio, directory: root, duration: 1, settings: settings,
-                recognizer: StubRecognizer(invalid: true), onTranscribed: { _ in XCTFail("Invalid timestamps published") })
+                recognizer: StubRecognizer(invalid: true), onReviewed: { _ in XCTFail("Invalid timestamps published") })
             XCTFail("Expected failure")
         } catch {
             XCTAssertEqual(try Data(contentsOf: audio), original)
@@ -98,21 +107,22 @@ final class TranscriptionPipelineTests: XCTestCase {
         }
     }
 
-    @MainActor func testNoCodexStillProducesTranscriptAndClickableTimestampsWithoutRepeatingASR() async throws {
+    @MainActor func testNoProviderKeepsRawCheckpointPrivateAndRetryReusesASR() async throws {
         let (root, audio, settings) = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }
         let backend = StubRecognizer()
         var published: [TranscriptSegment] = []
         for _ in 0..<2 {
-            let result = try await TranscriptionPipeline.transcribe(audio: audio, directory: root, duration: 1, settings: settings,
-                recognizer: backend, onTranscribed: { published = $0 })
-            guard case .transcribed(let saved, let lecture, let warning, _) = result else { return XCTFail("Expected transcript") }
-            XCTAssertEqual(saved, published)
-            XCTAssertEqual(saved.first?.text, "원문 그대로 보관합니다.")
-            XCTAssertEqual(saved.first?.timingQuality, "whisper")
-            XCTAssertEqual(Transcript.activeID(at: 0.5, in: saved), 0)
-            XCTAssertNil(lecture); XCTAssertNotNil(warning)
+            do {
+                _ = try await TranscriptionPipeline.transcribe(audio: audio, directory: root, duration: 1, settings: settings,
+                    recognizer: backend, onReviewed: { published = $0 })
+                XCTFail("Correction must finish before publication")
+            } catch { XCTAssertTrue(published.isEmpty) }
         }
+        _ = try await TranscriptionPipeline.transcribe(audio: audio, directory: root, duration: 1, settings: settings,
+            recognizer: backend, provider: StubTextProvider(), onReviewed: { published = $0 })
+        XCTAssertEqual(published.first?.timingQuality, "whisper")
+        XCTAssertEqual(Transcript.activeID(at: 0.5, in: published), 0)
         let calls = await backend.calls; XCTAssertEqual(calls, 1)
     }
 
@@ -121,8 +131,9 @@ final class TranscriptionPipelineTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let settings = PipelineSettings(codex: "/usr/bin/false", ffmpeg: base.ffmpeg, language: base.language,
                                         aiModel: .sol, transcription: base.transcription)
+        let provider = StubTextProvider(); provider.invalidAnalysis = true
         let result = try await TranscriptionPipeline.transcribe(audio: audio, directory: root, duration: 1,
-            settings: settings, recognizer: StubRecognizer())
+            settings: settings, recognizer: StubRecognizer(), provider: provider)
         guard case .transcribed(let saved, let lecture, let warning, _) = result else { return XCTFail("Expected saved transcript") }
         XCTAssertEqual(saved.first?.originalText, "원문 그대로 보관합니다.")
         XCTAssertEqual(saved.last?.end, 1)

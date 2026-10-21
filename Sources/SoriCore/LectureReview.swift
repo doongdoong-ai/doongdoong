@@ -23,10 +23,6 @@ public enum LectureReview {
         public let complete: Bool
         public let edits: [Edit]
     }
-    public struct Term: Codable, Sendable {
-        public let term: String
-        public let evidence: [Evidence]
-    }
     public struct Request {
         public let instructions: String
         public let input: Data
@@ -50,10 +46,11 @@ public enum LectureReview {
         let segmentID: Int
         let code: String
     }
-    private struct BatchReceipt: Codable {
+    private struct NodeReceipt: Codable {
         let targetIDs: [Int]
-        let proposal: Proposal
+        let proposal: Proposal?
         let rejected: [Rejection]
+        let split: Bool
     }
     private struct Receipt: Codable {
         let fingerprint: String
@@ -64,11 +61,13 @@ public enum LectureReview {
         let proposals: [Proposal]
         let rejected: [Rejection]
     }
-    private static let maximumInput = 180_000
+    private static let maximumInput = 500_000
+    public static let maximumResponseBytes = 1_000_000
+    private static let maximumEdits = 4096
 
     public static func apply(_ proposal: Proposal, to source: [TranscriptSegment],
                              editableIDs: Set<Int>? = nil) throws -> [TranscriptSegment] {
-        guard proposal.complete, proposal.edits.count <= 256,
+        guard proposal.complete, proposal.edits.count <= maximumEdits,
               Set(source.map(\.id)).count == source.count else { throw invalid("incomplete_or_duplicate_source") }
         let byID = Dictionary(uniqueKeysWithValues: source.map { ($0.id, $0) })
         let allowed = editableIDs ?? Set(byID.keys)
@@ -131,7 +130,7 @@ public enum LectureReview {
 
     public static func decode(_ data: Data) throws -> Proposal {
         let object = try strictObject(data, keys: ["complete", "edits"])
-        guard let edits = object["edits"] as? [[String: Any]], edits.count <= 256 else { throw invalid("response_shape") }
+        guard let edits = object["edits"] as? [[String: Any]], edits.count <= maximumEdits else { throw invalid("response_shape") }
         for edit in edits {
             guard Set(edit.keys) == ["segmentID", "before", "after", "kind", "evidence"] else { throw invalid("unexpected_field") }
             try checkEvidenceShape(edit["evidence"])
@@ -139,13 +138,13 @@ public enum LectureReview {
         return try JSONDecoder().decode(Proposal.self, from: data)
     }
 
-    /// All batches validate against the same immutable input. Only the complete revision is committed.
+    /// Try the entire lecture first. Only capacity errors create a binary split.
+    /// Child receipts remain private until every sentence has been reviewed.
     public static func review(_ source: [TranscriptSegment], cacheURL: URL,
                               identity: TextProviderIdentity = .init(provider: "codex", model: "gpt-6.1-sol", reasoningEffort: "medium"),
                               onProgress: ((Progress) async -> Void)? = nil,
                               request: (Request) async throws -> Data) async throws -> Outcome {
-        let model = identity.model
-        let effort = identity.reasoningEffort
+        try Task.checkCancellation()
         guard !source.isEmpty, source.count <= 20_000, Set(source.map(\.id)).count == source.count,
               source.allSatisfy({ !$0.text.isEmpty && $0.text.count <= 4000 && $0.start.isFinite && $0.end.isFinite
                   && $0.start >= 0 && $0.end > $0.start }) else { throw invalid("source_shape") }
@@ -153,112 +152,111 @@ public enum LectureReview {
         let sourceData = try encoder.encode(source)
         guard sourceData.count <= 8 * 1024 * 1024 else { throw invalid("source_capacity") }
         let fingerprint = SHA256.hash(data: sourceData).map { String(format: "%02x", $0) }.joined()
-        let batches = try TranscriptCorrection.chunks(source, maximumBytes: 16_000, maximumSegments: 48)
-        if let size = try? cacheURL.resourceValues(forKeys: [.fileSizeKey]).fileSize, size <= 4 * 1024 * 1024,
+        if let size = try? cacheURL.resourceValues(forKeys: [.fileSizeKey]).fileSize, size <= 8 * 1024 * 1024,
            let data = try? Data(contentsOf: cacheURL), let saved = try? JSONDecoder().decode(Receipt.self, from: data),
            saved.fingerprint == fingerprint, saved.promptVersion == LectureReviewPrompts.version,
-           saved.model == model, saved.effort == effort,
-           (saved.provider ?? "codex") == identity.provider,
-           saved.proposals.count == batches.count,
-           zip(saved.proposals, batches).allSatisfy({ proposal, batch in
-               Set(proposal.edits.map(\.segmentID)).isSubset(of: Set(batch.map(\.id)))
-           }),
+           saved.model == identity.model, saved.effort == identity.reasoningEffort,
+           saved.provider == identity.provider,
            let restored = try? combine(saved.proposals, source: source) {
             try Task.checkCancellation()
             await onProgress?(.init(phase: .correction, completed: source.count, total: source.count, attempt: 0))
             return outcome(restored, source: source, edits: saved.proposals.reduce(0) { $0 + $1.edits.count }, cached: true, rejected: saved.rejected)
         }
-        let full = try JSONSerialization.jsonObject(with: TranscriptCorrection.input(for: source))
-        var context: [String: Any]
-        if (try TranscriptCorrection.input(for: source)).count < 125_000 {
-            context = ["source": full]
-        } else {
-            // Visit every part, including the end. Never truncate a lecture to fit context.
-            var terms: [Term] = []
-            let portions = try TranscriptCorrection.chunks(source, maximumBytes: 120_000, maximumSegments: 1800)
-            for (index, portion) in portions.enumerated() {
-                try Task.checkCancellation()
-                await onProgress?(.init(phase: .context, completed: index, total: portions.count, attempt: 1))
-                let data = try await request(.init(instructions: LectureReviewPrompts.context,
-                    input: TranscriptCorrection.input(for: portion), schema: contextSchema(ids: portion.map(\.id))))
-                terms += try decodeTerms(data, source: portion)
-                await onProgress?(.init(phase: .context, completed: index + 1, total: portions.count, attempt: 0))
-            }
-            var seen: Set<String> = []
-            terms = terms.filter { seen.insert($0.term).inserted }
-            let data = try encoder.encode(terms)
-            guard data.count <= 80_000 else { throw invalid("context_capacity") }
-            context = ["terms": try JSONSerialization.jsonObject(with: data), "allPartsReviewed": true]
-        }
-        var proposals: [Proposal] = []
-        var rejections: [Rejection] = []
         let partsRoot = cacheURL.appendingPathExtension("parts")
-        // A missing recording directory is a storage failure, not a successful review.
         if !FileManager.default.fileExists(atPath: partsRoot.path) {
             try FileManager.default.createDirectory(at: partsRoot, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         }
-        let identityData = try encoder.encode(identity)
-        let identityHash = SHA256.hash(data: identityData).map { String(format: "%02x", $0) }.joined()
-        let revisionKey = fingerprint + "-" + LectureReviewPrompts.version + "-" + identityHash
-        let parts = partsRoot.appendingPathComponent(revisionKey)
+        let identityHash = SHA256.hash(data: try encoder.encode(identity)).map { String(format: "%02x", $0) }.joined()
+        let parts = partsRoot.appendingPathComponent(fingerprint + "-" + LectureReviewPrompts.version + "-" + identityHash)
         try FileManager.default.createDirectory(at: parts, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        var completed = 0
-        for (batchIndex, batch) in batches.enumerated() {
-            try Task.checkCancellation()
-            let ids = batch.map(\.id)
-            let batchURL = parts.appendingPathComponent("\(batchIndex).json")
-            if let size = try? batchURL.resourceValues(forKeys: [.fileSizeKey]).fileSize, size <= 160_000,
-               let data = try? Data(contentsOf: batchURL), let saved = try? JSONDecoder().decode(BatchReceipt.self, from: data),
-               saved.targetIDs == ids, saved.rejected.allSatisfy({ ids.contains($0.segmentID) }),
-               (try? apply(saved.proposal, to: source, editableIDs: Set(ids))) != nil {
-                proposals.append(saved.proposal); rejections += saved.rejected
-                completed += batch.count
-                await onProgress?(.init(phase: .correction, completed: completed, total: source.count, attempt: 0))
-                continue
-            }
-            var payload = context
-            payload["editableSegments"] = try JSONSerialization.jsonObject(with: TranscriptCorrection.input(for: batch))
-            if context["source"] == nil, let first = source.firstIndex(where: { $0.id == batch[0].id }),
-               let last = source.firstIndex(where: { $0.id == batch.last!.id }) {
-                payload["nearbySource"] = try JSONSerialization.jsonObject(with:
-                    TranscriptCorrection.input(for: Array(source[max(0, first - 3)..<min(source.count, last + 4)])))
-            }
-            var accepted: Proposal?
-            var rejected: [Rejection] = []
-            // Retry invalid proposals with specific, non-transcript validation feedback.
-            // On a second semantic failure, preserve that entire sentence unchanged.
-            // A malformed/incomplete response still cannot count as a reviewed batch.
-            for attempt in 0..<2 {
-                await onProgress?(.init(phase: .correction, completed: completed, total: source.count, attempt: attempt + 1))
-                let input = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
-                guard input.count <= maximumInput else { throw invalid("request_capacity") }
-                let data = try await request(.init(instructions: LectureReviewPrompts.correction,
-                    input: input, schema: try schema(ids: ids)))
-                try Task.checkCancellation()
-                do {
-                    let checked = try validated(try decode(data), source: source, ids: Set(ids))
-                    if checked.1.isEmpty || attempt == 1 {
-                        accepted = checked.0; rejected = checked.1; break
-                    }
-                    payload["validationFeedback"] = try JSONSerialization.jsonObject(with: encoder.encode(checked.1))
-                } catch {
-                    if attempt == 1 { throw error }
-                    payload["validationFeedback"] = [["code": (error as? ValidationError)?.code ?? "response_shape"]]
-                }
-            }
-            guard let accepted else { throw invalid("missing_proposal") }
-            let saved = BatchReceipt(targetIDs: ids, proposal: accepted, rejected: rejected)
-            try encoder.encode(saved).write(to: batchURL, options: .atomic)
-            proposals.append(accepted); rejections += rejected
-            completed += batch.count
+        var completed = 0, requests = 0
+        var proposals: [Proposal] = [], rejections: [Rejection] = []
+
+        func accept(_ proposal: Proposal, rejected: [Rejection], count: Int) async {
+            proposals.append(proposal); rejections += rejected; completed += count
             await onProgress?(.init(phase: .correction, completed: completed, total: source.count, attempt: 0))
         }
+        func visit(_ range: Range<Int>, path: String) async throws {
+            try Task.checkCancellation()
+            let target = Array(source[range]), ids = target.map(\.id)
+            // A few read-only boundary sentences retain context when fallback is necessary.
+            let visible = Array(source[max(0, range.lowerBound - 3)..<min(source.count, range.upperBound + 3)])
+            let nodeURL = parts.appendingPathComponent(path + ".json")
+            var mustSplit = false
+            if let size = try? nodeURL.resourceValues(forKeys: [.fileSizeKey]).fileSize, size <= maximumResponseBytes + 200_000,
+               let data = try? Data(contentsOf: nodeURL), let saved = try? JSONDecoder().decode(NodeReceipt.self, from: data),
+               saved.targetIDs == ids {
+                if saved.split { mustSplit = true }
+                else if let proposal = saved.proposal, saved.rejected.allSatisfy({ ids.contains($0.segmentID) }),
+                        (try? apply(proposal, to: visible, editableIDs: Set(ids))) != nil {
+                    await accept(proposal, rejected: saved.rejected, count: target.count); return
+                }
+            }
+            if !mustSplit {
+                var payload: [String: Any] = ["source": try JSONSerialization.jsonObject(with: TranscriptCorrection.input(for: visible)),
+                                             "editableIDs": ids]
+                do {
+                    for attempt in 1...2 {
+                        try Task.checkCancellation()
+                        await onProgress?(.init(phase: .correction, completed: completed, total: source.count, attempt: attempt))
+                        let input = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+                        guard input.count <= maximumInput else { throw TextGenerationError.capacityExceeded }
+                        guard requests < 128 else { throw invalid("fallback_exhausted") }
+                        requests += 1
+                        let data = try await request(.init(instructions: LectureReviewPrompts.correction,
+                            input: input, schema: try schema(ids: ids)))
+                        try Task.checkCancellation()
+                        guard data.count <= maximumResponseBytes else { throw TextGenerationError.capacityExceeded }
+                        do {
+                            let proposal = try decode(data)
+                            // Explicitly incomplete review is not a successful revision.
+                            // Retry once before reducing the scope on output exhaustion.
+                            if !proposal.complete {
+                                if attempt == 2 { throw TextGenerationError.capacityExceeded }
+                                payload["validationFeedback"] = [["code": "incomplete_review"]]
+                                continue
+                            }
+                            let checked = try validated(proposal, source: visible, ids: Set(ids))
+                            if checked.1.isEmpty || attempt == 2 {
+                                let saved = NodeReceipt(targetIDs: ids, proposal: checked.0, rejected: checked.1, split: false)
+                                try encoder.encode(saved).write(to: nodeURL, options: .atomic)
+                                await accept(checked.0, rejected: checked.1, count: target.count)
+                                return
+                            }
+                            payload["validationFeedback"] = try JSONSerialization.jsonObject(with: encoder.encode(checked.1))
+                        } catch let error as TextGenerationError { throw error }
+                        catch {
+                            if attempt == 2 { throw error }
+                            payload["validationFeedback"] = [["code": (error as? ValidationError)?.code ?? "response_shape"]]
+                        }
+                    }
+                } catch TextGenerationError.capacityExceeded {
+                    mustSplit = true
+                }
+            }
+            guard mustSplit, range.count > 1, path.count <= 12 else { throw invalid("fallback_exhausted") }
+            try encoder.encode(NodeReceipt(targetIDs: ids, proposal: nil, rejected: [], split: true)).write(to: nodeURL, options: .atomic)
+            // Balanced by encoded bytes, always at an existing sentence boundary.
+            let sizes = try target.map { try TranscriptCorrection.input(for: [$0]).count }
+            let half = sizes.reduce(0, +) / 2
+            var accumulated = 0, pivot = 1, closest = Int.max
+            for index in 0..<(sizes.count - 1) {
+                accumulated += sizes[index]
+                if abs(accumulated - half) < closest { closest = abs(accumulated - half); pivot = index + 1 }
+            }
+            let middle = range.lowerBound + pivot
+            try await visit(range.lowerBound..<middle, path: path + "0")
+            try await visit(middle..<range.upperBound, path: path + "1")
+        }
+        try await visit(source.indices, path: "r")
+        guard completed == source.count else { throw invalid("incomplete_review") }
         let result = try combine(proposals, source: source)
         try Task.checkCancellation()
         let receipt = Receipt(fingerprint: fingerprint, promptVersion: LectureReviewPrompts.version,
-                              model: model, effort: effort, provider: identity.provider, proposals: proposals, rejected: rejections)
+                              model: identity.model, effort: identity.reasoningEffort, provider: identity.provider,
+                              proposals: proposals, rejected: rejections)
         let committed = try encoder.encode(receipt)
-        guard committed.count <= 4 * 1024 * 1024 else { throw invalid("revision_capacity") }
+        guard committed.count <= 8 * 1024 * 1024 else { throw invalid("revision_capacity") }
         try committed.write(to: cacheURL, options: .atomic)
         return outcome(result, source: source, edits: proposals.reduce(0) { $0 + $1.edits.count }, cached: false, rejected: rejections)
     }
@@ -333,29 +331,13 @@ public enum LectureReview {
         return previous.last!
     }
     private static func strictObject(_ data: Data, keys: Set<String>) throws -> [String: Any] {
-        guard data.count <= 160_000, let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+        guard data.count <= maximumResponseBytes, let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               Set(object.keys) == keys else { throw invalid("response_shape") }
         return object
     }
     private static func checkEvidenceShape(_ object: Any?) throws {
         guard let rows = object as? [[String: Any]], rows.count <= 3,
               rows.allSatisfy({ Set($0.keys) == ["segmentID", "quote"] }) else { throw invalid("evidence_shape") }
-    }
-    private static func decodeTerms(_ data: Data, source: [TranscriptSegment]) throws -> [Term] {
-        let object = try strictObject(data, keys: ["complete", "terms"])
-        guard let rows = object["terms"] as? [[String: Any]], rows.count <= 80 else { throw invalid("terms_shape") }
-        for row in rows {
-            guard Set(row.keys) == ["term", "evidence"] else { throw invalid("terms_shape") }
-            try checkEvidenceShape(row["evidence"])
-        }
-        struct Result: Decodable { let complete: Bool; let terms: [Term] }
-        let result = try JSONDecoder().decode(Result.self, from: data)
-        let byID = Dictionary(uniqueKeysWithValues: source.map { ($0.id, $0) })
-        guard result.complete, result.terms.allSatisfy({ term in
-            (2...40).contains(term.term.count) && Set(term.evidence.map(\.segmentID)).count >= 2
-                && term.evidence.allSatisfy { valid($0, in: byID) && $0.quote.contains(term.term) }
-        }) else { throw invalid("unsupported_context") }
-        return result.terms
     }
     private static func evidenceSchema() -> [String: Any] {
         ["type": "array", "maxItems": 3, "items": ["type": "object", "additionalProperties": false,
@@ -365,20 +347,13 @@ public enum LectureReview {
     public static func schema(ids: [Int]) throws -> Data {
         try JSONSerialization.data(withJSONObject: ["type": "object", "additionalProperties": false,
             "required": ["complete", "edits"], "properties": ["complete": ["type": "boolean"],
-            "edits": ["type": "array", "maxItems": 256, "items": ["type": "object", "additionalProperties": false,
+            "edits": ["type": "array", "maxItems": maximumEdits, "items": ["type": "object", "additionalProperties": false,
                 "required": ["segmentID", "before", "after", "kind", "evidence"],
                 "properties": ["segmentID": ["type": "integer", "enum": ids],
                     "before": ["type": "string", "minLength": 1, "maxLength": 80],
                     "after": ["type": "string", "minLength": 1, "maxLength": 80],
                     "kind": ["type": "string", "enum": ["spacing", "punctuation", "recognition"]],
                     "evidence": evidenceSchema()]]]]], options: [.sortedKeys])
-    }
-    private static func contextSchema(ids: [Int]) throws -> Data {
-        try JSONSerialization.data(withJSONObject: ["type": "object", "additionalProperties": false,
-            "required": ["complete", "terms"], "properties": ["complete": ["type": "boolean"],
-            "terms": ["type": "array", "maxItems": 80, "items": ["type": "object", "additionalProperties": false,
-                "required": ["term", "evidence"], "properties": ["term": ["type": "string", "minLength": 2, "maxLength": 40],
-                "evidence": evidenceSchema()]]]]], options: [.sortedKeys])
     }
     private static func invalid(_ code: String) -> ValidationError { .init(code: code) }
 }

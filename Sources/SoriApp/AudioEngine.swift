@@ -77,6 +77,15 @@ final class AudioEngine: NSObject, AVAudioRecorderDelegate, AVAudioPlayerDelegat
         isPausedRecording.toggle()
     }
 
+    /// Sleep is a pause, never a toggle: repeated notifications cannot restart a mic.
+    func pauseForSleep() {
+        if isRecording, let recorder {
+            recorder.pause(); recordingTime = recorder.currentTime
+            isPausedRecording = true; level = 0
+        }
+        player?.pause(); isPlaying = false
+    }
+
     @discardableResult func finishRecording() -> Double {
         let time = recorder?.currentTime ?? recordingTime
         let previous = recorder; recorder = nil
