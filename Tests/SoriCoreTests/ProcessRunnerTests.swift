@@ -27,6 +27,22 @@ final class ProcessRunnerTests: XCTestCase {
         XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: directory.path).contains { $0.hasPrefix(".stdin-") })
     }
 
+    func testSuccessCleansInputBeforeReturningAndAllowsImmediateReuse() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("sori-reuse-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let runner = ProcessRunner()
+        let log = directory.appendingPathComponent("output.txt")
+
+        for index in 0..<10 {
+            let input = "연속 실행 \(index)\n"
+            try await runner.run(executable: URL(fileURLWithPath: "/bin/cat"), arguments: [], directory: directory, log: log, input: input)
+            XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: directory.path).contains { $0.hasPrefix(".stdin-") },
+                           "Input cleanup must finish before run returns")
+            XCTAssertEqual(try String(contentsOf: log, encoding: .utf8), input)
+        }
+    }
+
     func testCancellationTerminatesChild() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("sori-cancel-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
