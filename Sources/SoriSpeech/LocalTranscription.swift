@@ -3,44 +3,46 @@ import SoriCore
 import DoongdoongTranscription
 
 /// Application adapter. Correction, titles and emphasis stay outside the core.
-public enum CloudTranscription {
-    public static let engine = ChatGPTSpeechRecognizer.shared
+public enum LocalTranscription {
+    public static let engine = WhisperEngine()
 
     public static func prepareRecording(directory: URL) throws {
         try TranscriptionSession.prepareRecording(directory: directory)
     }
 
-    public static func transcribe(audio: URL, directory: URL, configuration: TranscriptionConfiguration,
+    public static func transcribe(audio: URL, directory: URL, configuration: WhisperConfiguration,
                                   recognizer: any SpeechRecognizer = engine,
                                   onProgress: (@Sendable (TranscriptionProgress) async -> Void)? = nil) async throws -> [TranscriptSegment] {
         let session = TranscriptionSession(audio: audio, directory: directory, configuration: configuration, recognizer: recognizer)
         let speech = try await session.processAvailable(final: true, onProgress: onProgress)
         let segments = speech.enumerated().map { index, value in
             var segment = TranscriptSegment(id: index, start: value.start, end: value.end, text: value.text)
-            segment.timingQuality = value.timingQuality
+            segment.timingQuality = "whisper"
             return segment
         }
         let values = try JSONSerialization.jsonObject(with: JSONEncoder().encode(segments))
-        try JSONSerialization.data(withJSONObject: ["method": "chatgpt-file-mms", "text": segments.map(\.text).joined(separator: "\n"),
+        try JSONSerialization.data(withJSONObject: ["method": "local-whisper", "text": segments.map(\.text).joined(separator: "\n"),
                                                      "segments": values], options: [.sortedKeys])
-            .write(to: directory.appendingPathComponent("asr-original.json"), options: .atomic)
+            .write(to: directory.appendingPathComponent("local-asr-original.json"), options: .atomic)
         return segments
     }
 
     public static func recoverInterrupted(audio: URL, directory: URL, language: String) async throws -> URL? {
-        try await TranscriptionSession.recoverInterrupted(audio: audio, directory: directory)
+        if let recovered = try await TranscriptionSession.recoverInterrupted(audio: audio, directory: directory) { return recovered }
+        // Keep recovery for recordings interrupted in the previous app version.
+        return try await LiveRecordingTranscription.recoverInterrupted(audio: audio, directory: directory, language: language)
     }
 }
 
 @MainActor
-public final class RecordingTranscription {
+public final class LocalRecordingTranscription {
     private let session: TranscriptionSession
     private var worker: Task<Void, Never>?
     private var stopping = false
     public var onIssue: ((String) -> Void)?
 
-    public init(audio: URL, directory: URL, configuration: TranscriptionConfiguration, recognizer: any SpeechRecognizer = CloudTranscription.engine) {
-        session = TranscriptionSession(audio: audio, directory: directory, configuration: configuration, recognizer: recognizer)
+    public init(audio: URL, directory: URL, configuration: WhisperConfiguration) {
+        session = TranscriptionSession(audio: audio, directory: directory, configuration: configuration, recognizer: LocalTranscription.engine)
     }
 
     public func start() {
@@ -62,7 +64,7 @@ public final class RecordingTranscription {
         }
     }
 
-    /// Normal stop drains the current file and preserves its checkpoint.
+    /// Normal stop drains an in-flight chunk, retaining the resident engine.
     /// The app's final pipeline reuses checkpoints and processes only the tail.
     public func finish(cancel: Bool = false) async {
         stopping = true

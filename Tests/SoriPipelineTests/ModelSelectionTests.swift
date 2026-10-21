@@ -89,26 +89,21 @@ final class ModelSelectionTests: XCTestCase {
             XCTAssertTrue(arguments.contains("model_provider=\"openai\""))
             XCTAssertTrue(arguments.contains("--ignore-user-config"))
         }
-        let settings = PipelineSettings(codex: "/usr/bin/true", ffmpeg: "", language: "ko", transcription: .init(codex: URL(fileURLWithPath: "/usr/bin/true"), ffmpeg: URL(fileURLWithPath: "/usr/bin/true"), python: URL(fileURLWithPath: "/usr/bin/true"), alignmentModelDirectory: URL(fileURLWithPath: "/tmp/models")))
+        let settings = PipelineSettings(codex: "/usr/bin/true", ffmpeg: "", language: "ko", transcription: .init(executable: URL(fileURLWithPath: "/usr/bin/true"), model: URL(fileURLWithPath: "/tmp/model"), vadModel: URL(fileURLWithPath: "/tmp/vad")))
         XCTAssertThrowsError(try settings.requireModel())
     }
-    @MainActor func testTranscriptionRequiresCodexAndAlignmentButNotATextModelSelection() throws {
+    @MainActor func testLocalTranscriptionDoesNotRequireCodexOrLogin() throws {
         let name = "doongdoong-test-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(name)
-        defer { defaults.removePersistentDomain(forName: name); try? FileManager.default.removeItem(at: root) }
+        defer { defaults.removePersistentDomain(forName: name) }
         defaults.set("/missing-codex", forKey: "codexPath")
-        defaults.set("/usr/bin/true", forKey: "ffmpegPath")
-        defaults.set("/usr/bin/true", forKey: "alignmentPython")
-        defaults.set(root.path, forKey: "alignmentModels")
-        let model = root.appendingPathComponent("hub/checkpoints/model.pt")
-        try FileManager.default.createDirectory(at: model.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try Data([1]).write(to: model)
+        defaults.set("/usr/bin/true", forKey: "whisperPath")
+        defaults.set("/usr/bin/true", forKey: "whisperModel")
+        defaults.set("/usr/bin/true", forKey: "vadModel")
         let settings = AppSettings(defaults: defaults)
-        XCTAssertFalse(settings.transcriptionReady)
-        settings.codexPath = "/usr/bin/true"
         XCTAssertTrue(settings.transcriptionReady)
         XCTAssertFalse(settings.analysisReady)
         XCTAssertNil(settings.selectedModel)
     }
+
 }

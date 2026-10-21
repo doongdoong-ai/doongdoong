@@ -1,0 +1,4 @@
+# Verified with Python 3.9 on Apple silicon. Runtime libraries are bundled by PyInstaller.
+aiortc==1.13.0
+av==14.2.0
+pyinstaller==6.16.0

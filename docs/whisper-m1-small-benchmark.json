@@ -1,0 +1,15 @@
+{
+  "chip": "Apple M1",
+  "memory_gib": 8,
+  "model": "small multilingual",
+  "audio_seconds": 27.105625,
+  "wall_seconds": 3.217,
+  "audio_seconds_per_wall_second": 8.43,
+  "exit_code": 0,
+  "synthetic_audio": true,
+  "cold_process_includes_model_load": true,
+  "text": "좋은 생각은 가끔 아주 작은 목소리로 찾아옵니다. 붕붕이는 그 순간을 놓치지 않기 위해 만들었습니다. 녹음 버튼을 누르고 편하게 이야기 하세요. 녹음을 마치면 당신의 목소리가 그리됩니다. 다시 들을 때는 지금 듣는 문장이 함께 따라옵니다. 중요한 순간에는 붕마크를 남겨보세요. 회의도 인터뷰도 혼자 떠올린 생각도 당신의 목소리 오래 꺼내 읽을 수 있도록",
+  "metal_selected": true,
+  "run_count": 1,
+  "measurement_scope": "Single synthetic Korean file, existing multilingual small model; not a meeting-audio accuracy benchmark."
+}

@@ -44,7 +44,7 @@ enum TranscriptionPipeline {
     """
     static func transcribe(audio: URL, directory: URL, duration: Double,
                            settings: PipelineSettings,
-                           recognizer: any SpeechRecognizer = CloudTranscription.engine,
+                           recognizer: any SpeechRecognizer = LocalTranscription.engine,
                            provider: (any TextGenerationProvider)? = nil,
                            onProgress: (@MainActor @Sendable (ProcessingProgress) -> Void)? = nil,
                            onReviewed: (([TranscriptSegment]) throws -> Void)? = nil) async throws -> TranscriptionResult {
@@ -59,15 +59,15 @@ enum TranscriptionPipeline {
         }
         guard duration.isFinite, duration > 0 else { throw TranscriptionError.invalidAudio }
         let started = ProcessInfo.processInfo.systemUptime
-        let original = try await CloudTranscription.transcribe(audio: audio, directory: directory,
+        let original = try await LocalTranscription.transcribe(audio: audio, directory: directory,
             configuration: settings.transcription, recognizer: recognizer, onProgress: { value in
-                await onProgress?(.init(stage: .transcription, detail: value.phase == .alignment ? "문장과 음성을 대조해 재생 위치를 맞추고 있어요." : "음성을 텍스트로 바꾸고 있어요. 처리한 구간은 이어서 사용합니다.",
+                await onProgress?(.init(stage: .transcription, detail: "녹음 중 처리한 구간은 이어서 사용합니다.",
                     completed: value.processedSeconds, total: value.totalSeconds, unit: .audio))
             })
         timings["transcriptionSeconds"] = ProcessInfo.processInfo.systemUptime - started
         guard !original.isEmpty else { return .noSpeech }
         let reviewRanges: [AudioReviewRange] = []
-        // The transcription core owns raw words and acoustically aligned timestamps.
+        // The local core owns uncorrected words and native Whisper timestamps.
         // Text review must not change those times or the original text.
         var final = original
         var warnings: [String] = []
