@@ -87,9 +87,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                let id = self.store.selectedID,
                let index = self.store.recordings.firstIndex(where: { $0.id == id }) {
                 self.store.recordings[index].status = args.contains("--polishing-preview") ? .polishing : .transcribing
-                self.store.recordings[index].segments = []
+                if !args.contains("--transcript-preview") { self.store.recordings[index].segments = [] }
                 self.store.processingID = id
-                self.store.progressDetail = "AI가 녹음을 정리하고 있어요"
+                self.store.processingStartedAt = Date().addingTimeInterval(-83)
+                self.store.updateProgress(.init(stage: args.contains("--polishing-preview") ? .correction : .transcription,
+                    detail: args.contains("--polishing-preview") ? "뜻과 숫자를 보존하며 오타와 띄어쓰기를 확인합니다." : "녹음 중 처리한 구간은 이어서 사용합니다.",
+                    completed: args.contains("--polishing-preview") ? 384 : 2460, total: args.contains("--polishing-preview") ? 960 : 4500,
+                    unit: args.contains("--polishing-preview") ? .sentences : .audio), for: id)
+                if args.contains("--polishing-preview") { self.store.processingCompletedSteps = [.transcription] }
             }
             if args.contains("--review-preview"), let id = self.store.selectedID,
                let index = self.store.recordings.firstIndex(where: { $0.id == id }) {
@@ -100,11 +105,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                     self.store.recordings[index].segments[0].timingQuality = "approximate"
                 }
             }
-            let settings = args.contains("--settings-preview")
+            let settings = args.contains("--settings-preview") || args.contains("--providers-preview")
             let search = args.contains("--search-preview") || args.contains("--empty-search-preview")
             if search { self.store.transcriptSearch = args.contains("--empty-search-preview") ? "일치하지 않는 검색어" : "녹음" }
-            let size = settings ? NSSize(width: 600, height: 600) : NSSize(width: args.contains("--minimum-window") ? 1000 : 1280, height: args.contains("--minimum-window") ? 670 : 820)
-            let content = settings ? AnyView(SettingsView(store: self.store)) : AnyView(ContentView(store: self.store, transcriptVisible: args.contains("--transcript-preview"), searchVisible: search))
+            let size = settings ? NSSize(width: 600, height: args.contains("--provider-details-preview") ? 1000 : 600) : NSSize(width: args.contains("--minimum-window") ? 1000 : 1280, height: args.contains("--minimum-window") ? 670 : 820)
+            let content = settings ? AnyView(SettingsView(store: self.store, initialTab: args.contains("--providers-preview") ? 1 : 0, providerDetailsExpanded: args.contains("--provider-details-preview"), viewportHeight: size.height)) : AnyView(ContentView(store: self.store, transcriptVisible: args.contains("--transcript-preview"), searchVisible: search))
             let view = NSHostingView(rootView: content.frame(width: size.width, height: size.height).environment(\.displayScale, 2).preferredColorScheme(.light).tint(SoriTheme.accent))
             view.appearance = NSAppearance(named: .aqua)
             view.frame = NSRect(origin: .zero, size: size)

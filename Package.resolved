@@ -1,13 +1,22 @@
 {
-  "originHash" : "56c10e23ac0d7798f403e840f289e5f282ed82b38cf5a4c820d420a721b0a48c",
+  "originHash" : "5827ccaec261967493f216db49a1670df1f7634655a2a79e383277bbffa33caa",
   "pins" : [
+    {
+      "identity" : "codex-core",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/doongdoong-ai/codex-core.git",
+      "state" : {
+        "revision" : "26ca9a6a4b292c01960b0038d8721b2224182f5d",
+        "version" : "0.1.0"
+      }
+    },
     {
       "identity" : "transcription-core",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/doongdoong-ai/transcription-core.git",
       "state" : {
-        "revision" : "16fb2abade3d035479f539a87af4b36b35c32308",
-        "version" : "0.1.0"
+        "revision" : "a6bdc9d1fa7d9b4a0dbb00b623d76d3c0add7046",
+        "version" : "0.1.1"
       }
     }
   ],

@@ -1,5 +1,6 @@
 import Foundation
 import SoriCore
+import DoongdoongCodex
 
 /// Re-listen only where acoustic evidence did not match any transcript sentence.
 /// A new ASR response is accepted only after independent alignment within its exact gap.

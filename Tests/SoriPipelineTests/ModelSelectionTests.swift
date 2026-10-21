@@ -5,6 +5,34 @@ import DoongdoongTranscription
 @testable import SoriApp
 
 final class ModelSelectionTests: XCTestCase {
+    @MainActor func testVendorSettingsPersistButRunningJobKeepsItsSnapshot() async throws {
+        let name = "doongdoong-test-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        defaults.set("/usr/bin/true", forKey: "codexPath")
+        let settings = AppSettings(defaults: defaults, catalogResolver: { _ in
+            .init(models: [.init(model: .sol, reasoningEfforts: [.medium, .high]), .init(model: .luna, reasoningEfforts: [.medium])])
+        })
+        await settings.refreshAIConnection()?.value
+        settings.reasoningEffort = .high
+        settings.requestTimeout = 600
+        let job = settings.snapshot
+        settings.preferredModelID = CodexModel.luna.rawValue
+        XCTAssertNil(settings.selectedModel, "Unsupported effort must not silently fall back")
+        settings.reasoningEffort = .medium
+        XCTAssertEqual(settings.selectedModel, .luna)
+        settings.analysisEnabled = false
+        XCTAssertNil(settings.snapshot.aiModel)
+        XCTAssertEqual(job.aiModel, .sol)
+        XCTAssertEqual(job.reasoningEffort, .high)
+        XCTAssertEqual(job.requestTimeout, 600)
+        let restored = AppSettings(defaults: defaults)
+        XCTAssertEqual(restored.preferredModelID, CodexModel.luna.rawValue)
+        XCTAssertEqual(restored.reasoningEffort, .medium)
+        XCTAssertEqual(restored.requestTimeout, 600)
+        XCTAssertFalse(restored.analysisEnabled)
+        XCTAssertNil(restored.selectedModel, "Each launch must check the catalog again")
+    }
     @MainActor func testEachSessionResolvesAgainAndDoesNotKeepStaleSelection() async throws {
         let name = "doongdoong-test-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
@@ -53,7 +81,7 @@ final class ModelSelectionTests: XCTestCase {
 
     @MainActor func testCLIRequestsUseChosenModelMediumAndExplicitProvider() throws {
         for model in CodexModel.allCases {
-            let arguments = try TranscriptionPipeline.requestArguments(schema: URL(fileURLWithPath: "/tmp/schema"),
+            let arguments = try CodexTextProvider.requestArguments(schema: URL(fileURLWithPath: "/tmp/schema"),
                 response: URL(fileURLWithPath: "/tmp/output"), instructions: "Review only.", selection: model)
             let index = try XCTUnwrap(arguments.firstIndex(of: "--model"))
             XCTAssertEqual(arguments[index + 1], model.rawValue)

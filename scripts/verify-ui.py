@@ -22,12 +22,15 @@ SCENARIOS = (
     ("notes", ("--notes-preview",), True, (2560, 1640)),
     ("focus", ("--focus-preview",), True, (2560, 1640)),
     ("settings", ("--settings-preview",), True, (1200, 1200)),
+    ("providers", ("--providers-preview",), True, (1200, 1200)),
+    ("providers-details", ("--providers-preview", "--provider-details-preview"), True, (1200, 2000)),
     ("welcome", (), False, (2560, 1640)),
     ("transcript", ("--transcript-preview",), True, (2560, 1640)),
     ("search", ("--transcript-preview", "--search-preview"), True, (2560, 1640)),
     ("empty-search", ("--minimum-window", "--transcript-preview", "--empty-search-preview"), True, (2000, 1340)),
     ("processing", ("--processing-preview",), True, (2560, 1640)),
     ("polishing", ("--polishing-preview",), True, (2560, 1640)),
+    ("polishing-transcript", ("--polishing-preview", "--transcript-preview"), True, (2560, 1640)),
     ("review", ("--minimum-window", "--transcript-preview", "--review-preview"), True, (2000, 1340)),
 )
 
@@ -73,6 +76,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--output", type=Path, help="New, nonexistent result directory (default: a fresh temporary directory)")
     parser.add_argument("--skip-build", action="store_true", help="Use the already packaged dist/둥둥이.app")
+    parser.add_argument("--scenario", action="append", choices=[s[0] for s in SCENARIOS], help="Only check these states (repeatable)")
     options = parser.parse_args()
     if sys.platform != "darwin":
         parser.error("This check requires macOS and AppKit")
@@ -105,6 +109,8 @@ def main():
         run_logged(["xcrun", "swiftc", "-swift-version", "5", str(root / "scripts" / "offscreen-check.swift"), "-o", str(helper)],
                    artifacts / "helper-build.log", root)
         for name, extra, demo, expected_size in SCENARIOS:
+            if options.scenario and name not in options.scenario:
+                continue
             screenshot = artifacts / (name + ".png")
             monitor_report = artifacts / (name + ".json")
             app_log = artifacts / (name + ".app.log")

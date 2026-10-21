@@ -2,6 +2,7 @@ import Foundation
 import XCTest
 import SoriCore
 import DoongdoongTranscription
+import DoongdoongAI
 @testable import SoriApp
 
 private actor StubRecognizer: SpeechRecognizer {
@@ -14,7 +15,59 @@ private actor StubRecognizer: SpeechRecognizer {
     }
 }
 
+@MainActor private final class StubTextProvider: TextGenerationProvider {
+    let identity = TextProviderIdentity(provider: "test-vendor", model: "test-model", reasoningEffort: "test-effort")
+    var requests = 0
+    let invalid: Bool
+    init(invalid: Bool = false) { self.invalid = invalid }
+    func checkConnection() async throws {}
+    func generate(_ request: StructuredTextRequest) async throws -> Data {
+        requests += 1
+        if invalid { return Data("{}".utf8) }
+        if request.instructions == LectureReviewPrompts.correction {
+            return Data(#"{"complete":true,"edits":[]}"#.utf8)
+        }
+        return Data(#"{"title":"원문 보관","synopsis":"원문을 그대로 보관한다는 설명입니다.","highlights":[]}"#.utf8)
+    }
+}
+
 final class TranscriptionPipelineTests: XCTestCase {
+    @MainActor func testIndependentProviderProcessesTextWithMeasuredStageProgress() async throws {
+        let (root, audio, settings) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let original = try Data(contentsOf: audio)
+        let provider = StubTextProvider()
+        var progress: [ProcessingProgress] = []
+        let result = try await TranscriptionPipeline.transcribe(audio: audio, directory: root, duration: 1,
+            settings: settings, recognizer: StubRecognizer(), provider: provider, onProgress: { progress.append($0) })
+        guard case .transcribed(let segments, let lecture, let warning, _) = result else { return XCTFail("Missing transcript") }
+        XCTAssertEqual(provider.requests, 2)
+        XCTAssertEqual(segments.first?.originalText, "원문 그대로 보관합니다.")
+        XCTAssertEqual(segments.first?.start, 0); XCTAssertEqual(segments.last?.end, 1)
+        XCTAssertEqual(lecture?.title, "원문 보관"); XCTAssertNil(warning)
+        XCTAssertEqual(progress.last(where: { $0.stage == .transcription })?.fraction, 1)
+        XCTAssertEqual(progress.last(where: { $0.stage == .correction })?.fraction, 1)
+        XCTAssertNil(progress.first(where: { $0.stage == .analysis })?.fraction)
+        XCTAssertEqual(progress.last(where: { $0.stage == .analysis })?.fraction, 1)
+        XCTAssertEqual(try Data(contentsOf: audio), original)
+        let receipt = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: root.appendingPathComponent("final-review.json"))) as? [String: Any])
+        XCTAssertEqual(receipt["provider"] as? String, "test-vendor")
+    }
+
+    @MainActor func testInvalidProviderResultPreservesSourceWithoutFalseCompletion() async throws {
+        let (root, audio, settings) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        var progress: [ProcessingProgress] = []
+        let result = try await TranscriptionPipeline.transcribe(audio: audio, directory: root, duration: 1,
+            settings: settings, recognizer: StubRecognizer(), provider: StubTextProvider(invalid: true), onProgress: { progress.append($0) })
+        guard case .transcribed(let segments, let lecture, let warning, _) = result else { return XCTFail("Missing transcript") }
+        XCTAssertEqual(segments.first?.text, "원문 그대로 보관합니다.")
+        XCTAssertNil(lecture); XCTAssertNotNil(warning)
+        for stage: ProcessingProgress.Stage in [.correction, .analysis] {
+            XCTAssertTrue(progress.last(where: { $0.stage == stage })?.issue == true)
+            XCTAssertFalse(progress.contains { $0.stage == stage && $0.fraction == 1 })
+        }
+    }
     @MainActor private func fixture() throws -> (URL, URL, PipelineSettings) {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("doongdoong-pipeline-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

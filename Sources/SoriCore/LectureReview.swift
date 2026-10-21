@@ -1,5 +1,6 @@
 import Foundation
 import CryptoKit
+import DoongdoongAI
 
 /// Sparse, source-anchored edits. A model never owns the transcript or its timeline.
 public enum LectureReview {
@@ -31,6 +32,13 @@ public enum LectureReview {
         public let input: Data
         public let schema: Data
     }
+    public struct Progress: Sendable {
+        public enum Phase: Sendable { case context, correction }
+        public let phase: Phase
+        public let completed: Int
+        public let total: Int
+        public let attempt: Int
+    }
     public struct Outcome {
         public let segments: [TranscriptSegment]
         public let changedSegments: Int
@@ -52,6 +60,7 @@ public enum LectureReview {
         let promptVersion: String
         let model: String
         let effort: String
+        let provider: String?
         let proposals: [Proposal]
         let rejected: [Rejection]
     }
@@ -131,10 +140,12 @@ public enum LectureReview {
     }
 
     /// All batches validate against the same immutable input. Only the complete revision is committed.
-    public static func review(_ source: [TranscriptSegment], cacheURL: URL, selection: CodexModel = .sol,
+    public static func review(_ source: [TranscriptSegment], cacheURL: URL,
+                              identity: TextProviderIdentity = .init(provider: "codex", model: "gpt-6.1-sol", reasoningEffort: "medium"),
+                              onProgress: ((Progress) async -> Void)? = nil,
                               request: (Request) async throws -> Data) async throws -> Outcome {
-        let model = selection.rawValue
-        let effort = CodexModel.reasoningEffort
+        let model = identity.model
+        let effort = identity.reasoningEffort
         guard !source.isEmpty, source.count <= 20_000, Set(source.map(\.id)).count == source.count,
               source.allSatisfy({ !$0.text.isEmpty && $0.text.count <= 4000 && $0.start.isFinite && $0.end.isFinite
                   && $0.start >= 0 && $0.end > $0.start }) else { throw invalid("source_shape") }
@@ -147,12 +158,14 @@ public enum LectureReview {
            let data = try? Data(contentsOf: cacheURL), let saved = try? JSONDecoder().decode(Receipt.self, from: data),
            saved.fingerprint == fingerprint, saved.promptVersion == LectureReviewPrompts.version,
            saved.model == model, saved.effort == effort,
+           (saved.provider ?? "codex") == identity.provider,
            saved.proposals.count == batches.count,
            zip(saved.proposals, batches).allSatisfy({ proposal, batch in
                Set(proposal.edits.map(\.segmentID)).isSubset(of: Set(batch.map(\.id)))
            }),
            let restored = try? combine(saved.proposals, source: source) {
             try Task.checkCancellation()
+            await onProgress?(.init(phase: .correction, completed: source.count, total: source.count, attempt: 0))
             return outcome(restored, source: source, edits: saved.proposals.reduce(0) { $0 + $1.edits.count }, cached: true, rejected: saved.rejected)
         }
         let full = try JSONSerialization.jsonObject(with: TranscriptCorrection.input(for: source))
@@ -163,11 +176,13 @@ public enum LectureReview {
             // Visit every part, including the end. Never truncate a lecture to fit context.
             var terms: [Term] = []
             let portions = try TranscriptCorrection.chunks(source, maximumBytes: 120_000, maximumSegments: 1800)
-            for portion in portions {
+            for (index, portion) in portions.enumerated() {
                 try Task.checkCancellation()
+                await onProgress?(.init(phase: .context, completed: index, total: portions.count, attempt: 1))
                 let data = try await request(.init(instructions: LectureReviewPrompts.context,
                     input: TranscriptCorrection.input(for: portion), schema: contextSchema(ids: portion.map(\.id))))
                 terms += try decodeTerms(data, source: portion)
+                await onProgress?(.init(phase: .context, completed: index + 1, total: portions.count, attempt: 0))
             }
             var seen: Set<String> = []
             terms = terms.filter { seen.insert($0.term).inserted }
@@ -182,9 +197,12 @@ public enum LectureReview {
         if !FileManager.default.fileExists(atPath: partsRoot.path) {
             try FileManager.default.createDirectory(at: partsRoot, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         }
-        let revisionKey = fingerprint + "-" + LectureReviewPrompts.version + "-" + model + "-" + effort
+        let identityData = try encoder.encode(identity)
+        let identityHash = SHA256.hash(data: identityData).map { String(format: "%02x", $0) }.joined()
+        let revisionKey = fingerprint + "-" + LectureReviewPrompts.version + "-" + identityHash
         let parts = partsRoot.appendingPathComponent(revisionKey)
         try FileManager.default.createDirectory(at: parts, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        var completed = 0
         for (batchIndex, batch) in batches.enumerated() {
             try Task.checkCancellation()
             let ids = batch.map(\.id)
@@ -194,6 +212,8 @@ public enum LectureReview {
                saved.targetIDs == ids, saved.rejected.allSatisfy({ ids.contains($0.segmentID) }),
                (try? apply(saved.proposal, to: source, editableIDs: Set(ids))) != nil {
                 proposals.append(saved.proposal); rejections += saved.rejected
+                completed += batch.count
+                await onProgress?(.init(phase: .correction, completed: completed, total: source.count, attempt: 0))
                 continue
             }
             var payload = context
@@ -209,6 +229,7 @@ public enum LectureReview {
             // On a second semantic failure, preserve that entire sentence unchanged.
             // A malformed/incomplete response still cannot count as a reviewed batch.
             for attempt in 0..<2 {
+                await onProgress?(.init(phase: .correction, completed: completed, total: source.count, attempt: attempt + 1))
                 let input = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
                 guard input.count <= maximumInput else { throw invalid("request_capacity") }
                 let data = try await request(.init(instructions: LectureReviewPrompts.correction,
@@ -229,11 +250,13 @@ public enum LectureReview {
             let saved = BatchReceipt(targetIDs: ids, proposal: accepted, rejected: rejected)
             try encoder.encode(saved).write(to: batchURL, options: .atomic)
             proposals.append(accepted); rejections += rejected
+            completed += batch.count
+            await onProgress?(.init(phase: .correction, completed: completed, total: source.count, attempt: 0))
         }
         let result = try combine(proposals, source: source)
         try Task.checkCancellation()
         let receipt = Receipt(fingerprint: fingerprint, promptVersion: LectureReviewPrompts.version,
-                              model: model, effort: effort, proposals: proposals, rejected: rejections)
+                              model: model, effort: effort, provider: identity.provider, proposals: proposals, rejected: rejections)
         let committed = try encoder.encode(receipt)
         guard committed.count <= 4 * 1024 * 1024 else { throw invalid("revision_capacity") }
         try committed.write(to: cacheURL, options: .atomic)

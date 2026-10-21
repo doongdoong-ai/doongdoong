@@ -2,12 +2,22 @@ import SwiftUI
 import AVFoundation
 import SoriCore
 import SoriSpeech
+import DoongdoongCodex
 
 struct SettingsView: View {
     @Bindable var store: AppStore
     @State private var tab = 0
     @State private var advanced = false
     @State private var copiedLoginCommand = false
+    @State private var providerAdvanced = false
+    @State private var codexDraft = ""
+    private let viewportHeight: CGFloat
+    init(store: AppStore, initialTab: Int = 0, providerDetailsExpanded: Bool = false, viewportHeight: CGFloat = 600) {
+        self.store = store; _tab = State(initialValue: initialTab)
+        _providerAdvanced = State(initialValue: providerDetailsExpanded)
+        _codexDraft = State(initialValue: store.settings.codexPath)
+        self.viewportHeight = viewportHeight
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -17,16 +27,136 @@ struct SettingsView: View {
                 Button("완료") { store.showSettings = false }.keyboardShortcut(.defaultAction)
             }.padding(.bottom, 24)
             Picker("설정 항목", selection: $tab) {
-                Text("일반").tag(0); Text("단축키").tag(1)
+                Text("일반").tag(0); Text("AI 공급자").tag(1); Text("단축키").tag(2)
             }.pickerStyle(.segmented).labelsHidden().padding(.bottom, 24)
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
                     if tab == 0 { general }
+                    else if tab == 1 { providers }
                     else { shortcuts }
                 }.frame(maxWidth: .infinity, alignment: .leading).padding(.bottom, 12)
             }
-        }.font(.system(size: 14)).padding(30).frame(width: 600, height: 600).background(SoriTheme.paper)
+        }.font(.system(size: 14)).padding(30).frame(width: 600, height: viewportHeight).background(SoriTheme.paper)
             .onChange(of: store.settings.codexPath) { _, _ in copiedLoginCommand = false }
+    }
+
+    private var providers: some View {
+        @Bindable var settings = store.settings
+        return VStack(alignment: .leading, spacing: 22) {
+            HStack(spacing: 14) {
+                if let icon = NSImage(contentsOf: AppResources.directory.appendingPathComponent("codex-icon.png")) {
+                    Image(nsImage: icon).resizable().aspectRatio(contentMode: .fit).frame(width: 44, height: 44)
+                        .clipShape(RoundedRectangle(cornerRadius: 11)).accessibilityHidden(true)
+                }
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Codex").font(.system(size: 18, weight: .semibold)).foregroundStyle(SoriTheme.ink)
+                    Text("교정 · 제목 · 핵심 요약").font(.system(size: 13)).foregroundStyle(SoriTheme.secondary)
+                }
+                Spacer()
+                HStack(spacing: 6) {
+                    if settings.checkingAI { ProgressView().controlSize(.small) }
+                    else { Circle().fill(settings.selectedModel == nil ? SoriTheme.secondary.opacity(0.45) : Color.green).frame(width: 6, height: 6) }
+                    Text(settings.checkingAI ? "확인 중" : settings.selectedModel == nil ? "연결 필요" : "연결됨")
+                        .font(.system(size: 12)).foregroundStyle(SoriTheme.secondary)
+                }
+            }.padding(17).background(SoriTheme.surface, in: RoundedRectangle(cornerRadius: 12))
+                .overlay(RoundedRectangle(cornerRadius: 12).stroke(SoriTheme.ink.opacity(0.08), lineWidth: 1))
+
+            Toggle("녹음 후 AI로 교정·요약", isOn: $settings.analysisEnabled).toggleStyle(.switch).controlSize(.small)
+            caption("전사는 Mac에서 처리합니다. Codex에는 전사된 텍스트를 보내며, CLI에 로그인한 ChatGPT 계정을 사용합니다.")
+
+            VStack(alignment: .leading, spacing: 11) {
+                HStack(spacing: 12) {
+                    Button(settings.checkingAI ? "연결 확인 중…" : "연결 다시 확인") { settings.refreshAIConnection() }
+                        .disabled(settings.checkingAI || !settings.codexReady)
+                    Button(copiedLoginCommand ? "복사됨" : "로그인 명령 복사") { copyLoginCommand() }
+                        .disabled(!settings.codexReady)
+                }
+                caption(settings.codexReady ? settings.aiConnectionMessage : "Codex CLI를 찾지 못했습니다. 아래 실행 경로를 확인해 주세요.")
+                if copiedLoginCommand { caption("터미널에 붙여 넣어 로그인한 뒤 연결을 다시 확인하세요.") }
+                if let date = settings.lastConnectionCheck {
+                    Text("마지막 확인 \(date.formatted(date: .omitted, time: .shortened))")
+                        .font(.system(size: 12)).foregroundStyle(SoriTheme.secondary)
+                }
+            }
+            Divider()
+            VStack(alignment: .leading, spacing: 18) {
+                settingRow("모델") {
+                    Picker("모델", selection: $settings.preferredModelID) {
+                        Text("자동 · Sol 우선").tag("")
+                        ForEach(settings.availableModels) { option in Text(option.displayName).tag(option.id) }
+                        if !settings.preferredModelID.isEmpty && !settings.availableModels.contains(where: { $0.id == settings.preferredModelID }) {
+                            Text(settings.preferredModelID + " · 확인 필요").tag(settings.preferredModelID)
+                        }
+                    }.labelsHidden().frame(maxWidth: 270).disabled(settings.checkingAI)
+                }
+                if settings.preferredModelID.isEmpty {
+                    caption("목록에 GPT-6.1 Sol이 있으면 우선 선택하고, 없으면 GPT-6 Luna를 선택합니다. 실행 오류가 나도 모델을 임의로 바꾸지는 않습니다.")
+                }
+                if let model = settings.selectedModel {
+                    Text("적용 모델  \(model.displayName)").font(.system(size: 12)).foregroundStyle(SoriTheme.secondary)
+                }
+                settingRow("추론 강도") {
+                    Picker("추론 강도", selection: $settings.reasoningEffort) {
+                        ForEach(settings.availableReasoningEfforts, id: \.self) { Text(effortName($0)).tag($0) }
+                        if !settings.availableReasoningEfforts.contains(settings.reasoningEffort) {
+                            Text(effortName(settings.reasoningEffort) + " · 확인 필요").tag(settings.reasoningEffort)
+                        }
+                    }.labelsHidden().frame(maxWidth: 270).disabled(settings.catalog == nil || settings.checkingAI)
+                }
+                caption("기본값은 Medium입니다. 강도가 높을수록 응답 시간과 사용량이 늘 수 있습니다.")
+                settingRow("요청별 응답 제한") {
+                    Picker("요청별 응답 제한", selection: $settings.requestTimeout) {
+                        ForEach([120.0, 300, 600, 900, 1800], id: \.self) { seconds in Text("\(Int(seconds / 60))분").tag(seconds) }
+                        if ![120.0, 300, 600, 900, 1800].contains(settings.requestTimeout) {
+                            Text("\(Int(settings.requestTimeout))초").tag(settings.requestTimeout)
+                        }
+                    }.labelsHidden().frame(maxWidth: 270)
+                }
+                caption("강의 전체 처리 시간이 아닌, 한 번의 AI 요청에 적용됩니다. 제한을 넘겨도 녹음과 저장된 전사문은 보관합니다.")
+            }
+            Divider()
+            DisclosureGroup("Codex 실행 경로", isExpanded: $providerAdvanced) {
+                VStack(alignment: .leading, spacing: 10) {
+                    TextField("Codex CLI 경로", text: $codexDraft).font(.system(size: 12, design: .monospaced))
+                        .textFieldStyle(.roundedBorder).onSubmit { applyCodexPath() }
+                    HStack {
+                        Button("파일 선택…") {
+                            let panel = NSOpenPanel(); panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
+                            if panel.runModal() == .OK, let url = panel.url { codexDraft = url.path; applyCodexPath() }
+                        }
+                        Spacer()
+                        Button("경로 적용") { applyCodexPath() }.disabled(codexDraft == settings.codexPath || codexDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                    caption("Codex CLI의 로그인 정보를 사용합니다. 이 화면에서 API 키를 저장하지 않습니다.")
+                }.padding(.top, 12)
+            }.onAppear { codexDraft = settings.codexPath }
+            caption("변경한 설정은 다음 작업부터 적용됩니다. 모델 목록 확인은 실행 권한이나 남은 사용량 조회가 아닙니다.")
+        }
+    }
+    private func settingRow<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        HStack(spacing: 20) { Text(title).font(.system(size: 14)); Spacer(minLength: 10); content() }
+    }
+    private func effortName(_ effort: ReasoningEffort) -> String {
+        switch effort {
+        case .none: "추론 없음 · None"
+        case .minimal: "최소 · Minimal"
+        case .low: "빠르게 · Low"
+        case .medium: "균형 · Medium"
+        case .high: "깊게 · High"
+        case .xhigh: "더 깊게 · Extra high"
+        case .max: "최대로 · Max"
+        case .ultra: "Ultra"
+        }
+    }
+    private func applyCodexPath() {
+        store.settings.codexPath = (codexDraft.trimmingCharacters(in: .whitespacesAndNewlines) as NSString).expandingTildeInPath
+        codexDraft = store.settings.codexPath
+    }
+    private func copyLoginCommand() {
+        let executable = "'" + store.settings.codexPath.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        NSPasteboard.general.clearContents(); NSPasteboard.general.setString(executable + " login", forType: .string)
+        copiedLoginCommand = true
     }
 
     private var general: some View {
@@ -55,27 +185,13 @@ struct SettingsView: View {
                     .accessibilityLabel("녹음 언어: \(languageName(settings.language))")
             }
             Divider()
-            VStack(alignment: .leading, spacing: 12) {
-                Text("AI 연결").font(.system(size: 14, weight: .medium))
-                caption("교정·제목·핵심 요약에 연결된 ChatGPT 계정을 사용합니다. 연결하지 않아도 녹음과 전사는 가능합니다.")
-                HStack(spacing: 12) {
-                    Button(settings.checkingAI ? "확인 중…" : "AI 연결 확인") {
-                        copiedLoginCommand = false
-                        settings.refreshAIConnection()
-                    }.disabled(settings.checkingAI || !settings.codexReady)
-                    if settings.checkingAI { ProgressView().controlSize(.small) }
-                    if settings.codexReady && settings.connectionState == .loginRequired {
-                        Button("로그인 명령 복사") {
-                            let executable = "'" + settings.codexPath.replacingOccurrences(of: "'", with: "'\\''") + "'"
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(executable + " login", forType: .string)
-                            copiedLoginCommand = true
-                        }
-                    }
+            HStack {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("AI 공급자").font(.system(size: 14, weight: .medium))
+                    caption(settings.analysisEnabled ? "Codex · 교정과 핵심 요약" : "자동 교정·요약 꺼짐")
                 }
-                if !settings.codexReady { caption("AI 연결 프로그램을 찾을 수 없습니다. 고급 설정에서 경로를 확인하세요.") }
-                else { caption(settings.aiConnectionMessage) }
-                if copiedLoginCommand { caption("로그인 명령을 복사했습니다. 터미널에 붙여 넣어 실행하세요.") }
+                Spacer()
+                Button("설정하기") { tab = 1 }
             }
             Divider()
             HStack(alignment: .top, spacing: 16) {
@@ -92,12 +208,7 @@ struct SettingsView: View {
                     pathRow("Whisper 실행 파일", value: $settings.whisperPath)
                     pathRow("음성 인식 모델", value: $settings.whisperModel)
                     pathRow("음성 감지 모델", value: $settings.vadModel)
-                    pathRow("Codex CLI", value: $settings.codexPath)
                     pathRow("FFmpeg", value: $settings.ffmpegPath)
-                    if let model = settings.selectedModel {
-                        caption("사용 모델: \(model.displayName) · \(CodexModel.reasoningEffort)")
-                    }
-                    caption("앱을 열 때 사용할 수 있는 모델을 확인합니다. Sol을 우선 사용하며, 목록에 없으면 Luna를 선택합니다.")
                     caption("FFmpeg는 가져온 파일을 녹음 형식으로 변환하는 데에 사용합니다.")
                     Divider().padding(.vertical, 4)
                     HStack(alignment: .top, spacing: 16) {

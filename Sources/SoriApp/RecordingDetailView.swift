@@ -57,7 +57,7 @@ struct RecordingDetailView: View {
         VStack(spacing: 0) {
             header
             tools
-            if !recording.segments.isEmpty && (recording.status.isProcessing || store.queue.contains(recording.id)) { progressBanner }
+            if !recording.segments.isEmpty && (recording.status.isProcessing || store.queue.contains(recording.id) || store.isFinalizing(recording.id)) { progressBanner }
             if let message = recording.message { messageBanner(message) }
             if let ranges = recording.reviewRanges, !ranges.isEmpty { audioReviewBanner(ranges) }
 
@@ -357,15 +357,8 @@ struct RecordingDetailView: View {
     }
 
     private var progressBanner: some View {
-        HStack(spacing: 12) {
-            ProgressView().controlSize(.small)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(store.queue.contains(recording.id) ? "AI 정리 대기" : recording.status.label).font(.system(size: 13, weight: .semibold))
-                Text(store.queue.contains(recording.id) ? "앞선 녹음 정리가 끝나면 시작합니다." : "AI가 녹음을 정리하고 있어요").font(.system(size: 13)).foregroundStyle(SoriTheme.secondary).lineLimit(2)
-            }
-            Spacer()
-            Button("중지") { store.cancelProcessing(recording.id) }.font(.system(size: 13)).buttonStyle(.plain).accessibilityLabel("이 녹음 AI 정리 중지")
-        }.padding(13).background(SoriTheme.sidebar, in: RoundedRectangle(cornerRadius: 9)).padding(.horizontal, 34).padding(.bottom, 10)
+        ProcessingProgressView(store: store, recordingID: recording.id, compact: true)
+            .padding(.horizontal, 34).padding(.bottom, 10)
     }
 
     private func audioReviewBanner(_ ranges: [AudioReviewRange]) -> some View {
@@ -423,14 +416,9 @@ struct RecordingDetailView: View {
         let waiting = store.queue.contains(recording.id)
         return VStack(spacing: 18) {
             Spacer()
-            if recording.status.isProcessing || waiting {
-                ProgressView().controlSize(.small).accessibilityHidden(true)
-                Text(waiting ? "AI 정리를 기다리고 있어요" : "AI가 녹음을 정리하고 있어요")
-                    .font(.system(size: 20, weight: .medium)).multilineTextAlignment(.center)
-                Text(waiting ? "앞선 녹음 정리가 끝나면 시작합니다." : "완료되면 음성과 함께 읽을 수 있어요.")
-                    .font(.system(size: 14)).foregroundStyle(SoriTheme.secondary).multilineTextAlignment(.center).lineSpacing(7)
-                Button(waiting ? "대기 취소" : "정리 중지") { store.cancelProcessing(recording.id) }
-                    .font(.system(size: 14)).buttonStyle(.plain).foregroundStyle(SoriTheme.secondary).padding(.top, 7)
+            if recording.status.isProcessing || waiting || store.isFinalizing(recording.id) {
+                ProcessingProgressView(store: store, recordingID: recording.id)
+                    .padding(.horizontal, 30)
             } else if recording.status == .noSpeech {
                 Text("감지된 음성이 없어요")
                     .font(.system(size: 20, weight: .medium)).multilineTextAlignment(.center)
