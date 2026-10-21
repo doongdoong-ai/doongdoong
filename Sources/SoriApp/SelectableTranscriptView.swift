@@ -20,11 +20,12 @@ struct TranscriptDocument {
             let start = output.length
             let timeStyle = NSMutableParagraphStyle()
             timeStyle.paragraphSpacing = 8
-            output.append(NSAttributedString(string: TimeText.clock(segment.start) + "\n", attributes: [
+            output.append(NSAttributedString(string: (segment.hasReliableTiming ? "" : "약 ") + TimeText.clock(segment.start) + "\n", attributes: [
                 .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular),
                 .foregroundColor: NSColor.secondaryLabelColor,
                 .paragraphStyle: timeStyle,
-                .link: URL(string: "doongdoong://sentence/\(segment.id)")!
+                .link: URL(string: "doongdoong://sentence/\(segment.id)")!,
+                .toolTip: segment.hasReliableTiming ? "이 문장 재생" : "정확한 위치를 확인하지 못했습니다. 가까운 음성부터 재생합니다."
             ]))
             let text = original ? segment.originalText : segment.text
             let textStart = output.length

@@ -276,7 +276,7 @@ private enum LibraryFilter: String, CaseIterable {
         case .all: true
         case .ready: recording.status == .ready || recording.status == .noSpeech
         case .pending: recording.status == .recording || queued || recording.status.isProcessing
-        case .failed: recording.status == .failed
+        case .failed: recording.status == .failed || recording.status == .reviewNeeded
         }
     }
 }
@@ -440,6 +440,7 @@ struct RecordingRow: View {
         case .queued: store.queue.contains(recording.id) ? "AI 정리 대기" : "음성 저장됨"
         case .transcribing, .polishing: "AI 정리 중"
         case .ready: "정리 완료"
+        case .reviewNeeded: "음성 확인 필요"
         case .noSpeech: "감지된 음성 없음"
         case .failed: "확인 필요"
         }
@@ -453,7 +454,7 @@ struct RecordingRow: View {
                         Text(recording.title).font(.system(size: 15, weight: .medium)).lineLimit(1)
                         if recording.isFavorite { Image(systemName: "star.fill").font(.system(size: 13)).foregroundStyle(SoriTheme.secondary).fixedSize() }
                     }
-                    if recording.status == .ready || !query.isEmpty {
+                    if recording.status == .ready || recording.status == .reviewNeeded || !query.isEmpty {
                         previewText.font(.system(size: 13)).foregroundStyle(SoriTheme.secondary).lineLimit(1)
                     } else {
                         Text(statusTitle).font(.system(size: 13))

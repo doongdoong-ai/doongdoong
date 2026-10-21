@@ -4,6 +4,7 @@ import SoriCore
 struct RecordingDetailView: View {
     @Bindable var store: AppStore
     let recording: Recording
+    @State private var showAudioReview = false
     @State private var showLectureNotes = false
     @State private var editingSegment: SegmentEdit?
     @State private var editedText = ""
@@ -58,6 +59,7 @@ struct RecordingDetailView: View {
             tools
             if !recording.segments.isEmpty && (recording.status.isProcessing || store.queue.contains(recording.id)) { progressBanner }
             if let message = recording.message { messageBanner(message) }
+            if let ranges = recording.reviewRanges, !ranges.isEmpty { audioReviewBanner(ranges) }
 
             if recording.id == store.recordingID { recordingState }
             else if recording.segments.isEmpty { emptyTranscript }
@@ -91,6 +93,7 @@ struct RecordingDetailView: View {
         }
         .onChange(of: recording.id) { _, _ in
             editingSegment = nil
+            showAudioReview = false
             editedText = ""
             renaming = false
             titleDraft = ""
@@ -363,6 +366,47 @@ struct RecordingDetailView: View {
             Spacer()
             Button("중지") { store.cancelProcessing(recording.id) }.font(.system(size: 13)).buttonStyle(.plain).accessibilityLabel("이 녹음 AI 정리 중지")
         }.padding(13).background(SoriTheme.sidebar, in: RoundedRectangle(cornerRadius: 9)).padding(.horizontal, 34).padding(.bottom, 10)
+    }
+
+    private func audioReviewBanner(_ ranges: [AudioReviewRange]) -> some View {
+        HStack(spacing: 12) {
+            Text("텍스트에 빠진 말이 있을 수 있어요.")
+            Spacer(minLength: 0)
+            Button("음성 확인") { showAudioReview = true }
+                .fixedSize().disabled(!canPlay)
+                .popover(isPresented: $showAudioReview, arrowEdge: .bottom) {
+                    VStack(alignment: .leading, spacing: 14) {
+                        Text("확인이 필요한 음성").font(.headline)
+                        Text("녹음과 전사문을 확인한 구간은 완료로 표시하세요.")
+                            .font(.system(size: 12)).foregroundStyle(.secondary)
+                        ScrollView {
+                            VStack(spacing: 12) {
+                                ForEach(Array(ranges.enumerated()), id: \.offset) { _, range in
+                                    HStack(spacing: 18) {
+                                        Button("\(TimeText.clock(range.start))–\(TimeText.clock(range.end)) 듣기") {
+                                            showLectureNotes = false
+                                            store.audio.seek(range.start)
+                                            if !store.audio.isPlaying { store.audio.togglePlayback() }
+                                            scrollRequest += 1
+                                        }.buttonStyle(.plain)
+                                        Spacer()
+                                        Button("확인 완료") {
+                                            store.update(recording.id) {
+                                                $0.reviewRanges?.removeAll { $0 == range }
+                                                $0.status = $0.completedStatus
+                                            }
+                                            if ranges.count == 1 { showAudioReview = false }
+                                        }.disabled(!canEditTranscript)
+                                    }
+                                }
+                            }.padding(.vertical, 4)
+                        }.frame(maxHeight: 260)
+                    }.padding(20).frame(width: 390)
+                }
+        }
+        .font(.system(size: 13)).foregroundStyle(SoriTheme.secondary)
+        .padding(12).background(SoriTheme.accentSoft.opacity(0.6), in: RoundedRectangle(cornerRadius: 8))
+        .padding(.horizontal, 34).padding(.bottom, 10)
     }
 
     private func messageBanner(_ message: String) -> some View {

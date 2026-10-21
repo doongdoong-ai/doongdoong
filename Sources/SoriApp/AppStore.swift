@@ -2,6 +2,7 @@ import AppKit
 import AVFoundation
 import Observation
 import SoriCore
+import SoriSpeech
 import UniformTypeIdentifiers
 
 @Observable @MainActor
@@ -37,6 +38,7 @@ final class AppStore {
     var showOriginal = false
     let root: URL
     private(set) var repository: LibraryRepository?
+    private var liveTranscription: LiveRecordingTranscription?
     private var pipelineTask: Task<Void, Never>?
     private var toastTask: Task<Void, Never>?
     private var importRunner: ProcessRunner?
@@ -64,6 +66,8 @@ final class AppStore {
         audio.onRecordingError = { [weak self] error in
             guard let self else { return }
             if let id = self.recordingID { self.update(id) { $0.duration = self.audio.recordingTime; $0.status = .failed; $0.message = error } }
+            let live = self.liveTranscription; self.liveTranscription = nil
+            Task { await live?.finish() }
             self.recordingID = nil; self.errorMessage = error
         }
         audio.onPlaybackError = { [weak self] error in self?.errorMessage = error }
@@ -185,6 +189,18 @@ final class AppStore {
                 throw error
             }
             recordingID = recording.id
+            if settings.transcriptionReady {
+                let snapshot = settings.snapshot
+                let live = LiveRecordingTranscription(audio: try repository.audioURL(for: recording),
+                    directory: try repository.directory(for: recording), codex: URL(fileURLWithPath: snapshot.codex),
+                    ffmpeg: URL(fileURLWithPath: snapshot.ffmpeg), language: snapshot.language)
+                let id = recording.id
+                live.onIssue = { [weak self] message in
+                    guard let self, self.recordingID == id else { return }
+                    self.update(id) { $0.message = message }
+                }
+                liveTranscription = live; live.start()
+            }
             favoritesOnly = false; search = ""; selectedProjectID = project.id
             selectedID = recording.id
         } catch { errorMessage = error.localizedDescription }
@@ -195,6 +211,8 @@ final class AppStore {
         isFinalizingRecording = true; finalizingID = id
         defer { isFinalizingRecording = false; finalizingID = nil }
         let duration = audio.finishRecording(); recordingID = nil
+        let live = liveTranscription; liveTranscription = nil
+        await live?.finish()
         let saved = update(id) { $0.duration = duration; $0.status = .queued }
         do {
             let url = try repository.audioURL(for: recording)
@@ -303,15 +321,22 @@ final class AppStore {
                     self.progressDetail = "AI가 녹음을 정리하고 있어요"
                     let lecture = try await TranscriptionPipeline.organize(segments: item.segments, directory: directory, settings: snapshot)
                     try Task.checkCancellation()
-                    guard self.update(id, { self.apply(lecture, to: &$0); $0.status = .ready; $0.message = nil }) else { return }
+                    guard self.update(id, { self.apply(lecture, to: &$0); $0.status = $0.completedStatus; $0.message = nil }) else { return }
                     self.notify("핵심 요약을 정리했습니다")
                     return
                 }
-                let audio = try repository.audioURL(for: item)
-                let info = try await Task.detached { try AudioEngine.inspect(audio) }.value
+                var audio = try repository.audioURL(for: item)
+                if item.audioFileName == nil,
+                   let recovered = try await LiveRecordingTranscription.recoverInterrupted(audio: audio, directory: directory, language: snapshot.language) {
+                    guard self.update(id, { $0.audioFileName = recovered.lastPathComponent }) else { throw SoriError.message("복구한 음성의 위치를 저장하지 못했습니다.") }
+                    audio = recovered
+                    if self.selectedID == id { try? self.audio.load(recovered) }
+                }
+                let source = audio
+                let info = try await Task.detached { try AudioEngine.inspect(source) }.value
                 try Task.checkCancellation()
                 guard self.update(id, { $0.status = .transcribing; $0.duration = info.duration; $0.waveform = info.waveform }) else {
-                    self.update(id) { $0.status = $0.segments.isEmpty ? .queued : .ready; $0.message = "저장 공간을 확인한 뒤 다시 시도해 주세요. 녹음은 보관되어 있습니다." }
+                    self.update(id) { $0.status = $0.segments.isEmpty ? .queued : $0.completedStatus; $0.message = "저장 공간을 확인한 뒤 다시 시도해 주세요. 녹음은 보관되어 있습니다." }
                     return
                 }
                 self.progressDetail = "AI가 녹음을 정리하고 있어요"
@@ -334,24 +359,28 @@ final class AppStore {
                     // preserving the earlier result and any manual edits in the task folder.
                     try repository.archiveTranscript(previous)
                     guard self.update(id, {
-                        $0.segments = []
+                        $0.segments = []; $0.reviewRanges = nil
                         $0.lectureHighlights = nil
                         $0.status = .noSpeech
                         $0.message = previous.segments.isEmpty ? nil : "이전 텍스트도 작업 폴더에 보관했습니다."
                     }) else { return }
                     self.notify("감지된 음성이 없어요 · \(item.title)")
-                case let .transcribed(segments, lecture, warning):
+                case let .transcribed(segments, lecture, warning, reviewRanges):
+                    if !item.segments.isEmpty, item.segments != segments {
+                        // Retain prior manual corrections when explicit reprocessing replaces text.
+                        try repository.archiveTranscript(item)
+                    }
                     guard self.update(id, {
-                        $0.segments = segments; $0.status = .ready; $0.message = warning
+                        $0.segments = segments; $0.reviewRanges = reviewRanges; $0.status = $0.completedStatus; $0.message = warning
                         $0.lectureHighlights = nil
                         if let lecture { self.apply(lecture, to: &$0) }
                     }) else { return }
                     let title = self.recordings.first(where: { $0.id == id })?.title ?? item.title
-                    self.notify(warning == nil ? "정리 완료 · \(title)" : "텍스트를 저장했습니다 · \(title)")
+                    self.notify(!reviewRanges.isEmpty ? "음성을 확인할 부분이 있어요 · \(title)" : warning == nil ? "정리 완료 · \(title)" : "텍스트를 저장했습니다 · \(title)")
                 }
             } catch {
                 self.update(id) {
-                    $0.status = $0.segments.isEmpty ? .failed : .ready
+                    $0.status = $0.segments.isEmpty ? .failed : $0.completedStatus
                     $0.message = error is CancellationError ? "AI 정리를 중지했습니다. 녹음은 저장되어 있으며 다시 시도할 수 있습니다." : error.localizedDescription
                 }
             }
@@ -360,7 +389,7 @@ final class AppStore {
 
     func cancelProcessing(_ id: UUID) {
         if processingID == id { pipelineTask?.cancel() }
-        else if queue.contains(id) { queue.removeAll { $0 == id }; lectureOnlyIDs.remove(id); update(id) { $0.status = $0.segments.isEmpty ? .queued : .ready; $0.message = "AI 정리 대기를 취소했습니다. 녹음은 저장되어 있습니다." } }
+        else if queue.contains(id) { queue.removeAll { $0 == id }; lectureOnlyIDs.remove(id); update(id) { $0.status = $0.segments.isEmpty ? .queued : $0.completedStatus; $0.message = "AI 정리 대기를 취소했습니다. 녹음은 저장되어 있습니다." } }
     }
     @discardableResult func update(_ id: UUID, _ change: (inout Recording) -> Void) -> Bool {
         guard let index = recordings.firstIndex(where: { $0.id == id }), let repository else { return false }
@@ -380,7 +409,7 @@ final class AppStore {
     func prepareForTermination() async -> Bool {
         isTerminating = true
         pipelineTask?.cancel(); importRunner?.cancel()
-        for id in queue { update(id) { $0.status = $0.segments.isEmpty ? .queued : .ready; $0.message = "앱 종료로 AI 정리 대기를 중지했습니다. 다시 시도할 수 있습니다." } }
+        for id in queue { update(id) { $0.status = $0.segments.isEmpty ? .queued : $0.completedStatus; $0.message = "앱 종료로 AI 정리 대기를 중지했습니다. 다시 시도할 수 있습니다." } }
         queue.removeAll()
         lectureOnlyIDs.removeAll()
         await stopRecording(enqueueForTranscription: false)

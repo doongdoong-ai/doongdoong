@@ -10,13 +10,14 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
 }
 
 public enum RecordingStatus: String, Codable, Sendable {
-    case recording, queued, transcribing, polishing, ready, noSpeech, failed
+    case recording, queued, transcribing, polishing, ready, reviewNeeded, noSpeech, failed
     public var label: String {
         switch self {
         case .recording: "녹음 중"
         case .queued: "AI 정리 대기"
         case .transcribing, .polishing: "AI 정리 중"
         case .ready: "정리 완료"
+        case .reviewNeeded: "음성 확인 필요"
         case .noSpeech: "감지된 음성 없음"
         case .failed: "다시 시도 필요"
         }
@@ -30,9 +31,21 @@ public struct TranscriptSegment: Codable, Identifiable, Equatable, Sendable {
     public var end: Double
     public var text: String
     public var originalText: String
+    // Missing in legacy recordings. Approximate positions never drive follow-along.
+    public var timingQuality: String?
+    public var hasReliableTiming: Bool { timingQuality == nil || timingQuality == "aligned" }
     public init(id: Int, start: Double, end: Double, text: String, originalText: String? = nil) {
         self.id = id; self.start = start; self.end = end; self.text = text
         self.originalText = originalText ?? text
+    }
+}
+
+public struct AudioReviewRange: Codable, Equatable, Sendable {
+    public let start: Double
+    public let end: Double
+    public let reason: String
+    public init(start: Double, end: Double, reason: String = "unmatched_audio") {
+        self.start = start; self.end = end; self.reason = reason
     }
 }
 
@@ -61,11 +74,16 @@ public struct Recording: Codable, Identifiable, Equatable, Sendable {
     public var generatedTitle: String?
     public var titleEditedByUser: Bool?
     public var lectureHighlights: [LectureHighlight]?
+    public var reviewRanges: [AudioReviewRange]?
+    public var audioFileName: String?
 
     public init(id: UUID = UUID(), projectID: UUID, title: String, createdAt: Date = Date()) {
         self.id = id; self.projectID = projectID; self.title = title; self.createdAt = createdAt
         duration = 0; status = .queued; segments = []; bookmarks = []; notes = ""
         isFavorite = false; waveform = []; isDemo = false
+    }
+    public var completedStatus: RecordingStatus {
+        !(reviewRanges ?? []).isEmpty ? .reviewNeeded : .ready
     }
     public var fullText: String { segments.map(\.text).joined(separator: "\n") }
 }
@@ -102,7 +120,7 @@ public enum Transcript {
         }
         guard lower > 0 else { return nil }
         let segment = segments[lower - 1]
-        return time < segment.end ? segment.id : nil
+        return segment.hasReliableTiming && time < segment.end ? segment.id : nil
     }
 
     public static func parseWhisper(_ data: Data, duration: Double) throws -> [TranscriptSegment] {

@@ -1,6 +1,7 @@
 import SwiftUI
 import AVFoundation
 import SoriCore
+import SoriSpeech
 
 struct SettingsView: View {
     @Bindable var store: AppStore
@@ -47,7 +48,7 @@ struct SettingsView: View {
                 Text(settings.transcriptionReady ? "AI 정리" : "AI 준비")
                     .font(.system(size: 14, weight: .medium))
                 caption("녹음을 마치면 저장된 파일을 AI로 정리합니다.")
-                caption("음성은 Mac에서 처리하고, 텍스트를 AI에 보내 문장을 정리합니다.")
+                caption("녹음 파일을 OpenAI에 보내 글로 옮기고, Mac에서 문장별 재생 위치를 맞춥니다.")
                 if !settings.transcriptionReady { caption(settings.transcriptionUnavailableReason) }
             }
             HStack {
@@ -97,12 +98,11 @@ struct SettingsView: View {
             }
             DisclosureGroup("고급 설정", isExpanded: $advanced) {
                 VStack(alignment: .leading, spacing: 12) {
-                    pathRow("음성 처리 실행 파일", value: $settings.whisperPath)
-                    pathRow("AI 모델 파일", value: $settings.modelPath)
-                    pathRow("음성 감지 모델", value: $settings.vadModelPath)
+                    pathRow("따라읽기 실행 환경", value: $settings.alignmentPython)
+                    pathRow("시간 정렬 모델 폴더", value: $settings.alignmentModels, directory: true)
                     pathRow("Codex CLI", value: $settings.codexPath)
                     pathRow("FFmpeg", value: $settings.ffmpegPath)
-                    caption("FFmpeg는 가져온 파일의 오디오 변환에만 사용합니다.")
+                    caption("FFmpeg는 파일 가져오기와 전송용 오디오 압축에 사용합니다.")
                     Divider().padding(.vertical, 4)
                     HStack(alignment: .top, spacing: 16) {
                         VStack(alignment: .leading, spacing: 8) {
@@ -148,13 +148,13 @@ struct SettingsView: View {
     private func caption(_ text: String) -> some View {
         Text(text).font(.system(size: 13)).foregroundStyle(SoriTheme.secondary).lineSpacing(5).fixedSize(horizontal: false, vertical: true)
     }
-    private func pathRow(_ title: String, value: Binding<String>) -> some View {
+    private func pathRow(_ title: String, value: Binding<String>, directory: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title).font(.system(size: 13))
             HStack {
                 TextField(title, text: value).font(.system(size: 13, design: .monospaced)).textFieldStyle(.roundedBorder)
                 Button("선택…") {
-                    let panel = NSOpenPanel(); panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
+                    let panel = NSOpenPanel(); panel.canChooseDirectories = directory; panel.canChooseFiles = !directory; panel.allowsMultipleSelection = false
                     if panel.runModal() == .OK, let url = panel.url { value.wrappedValue = url.path }
                 }
             }
