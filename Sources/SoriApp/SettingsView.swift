@@ -7,12 +7,7 @@ struct SettingsView: View {
     @Bindable var store: AppStore
     @State private var tab = 0
     @State private var advanced = false
-    @State private var checkingLogin = false
-    @State private var loginVerified = false
-    @State private var loginMessage = ""
-    @State private var loginClient: CodexAppServerClient?
-    @State private var loginTask: Task<Void, Never>?
-    @State private var loginGeneration = UUID()
+    @State private var copiedLoginCommand = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -31,14 +26,7 @@ struct SettingsView: View {
                 }.frame(maxWidth: .infinity, alignment: .leading).padding(.bottom, 12)
             }
         }.font(.system(size: 14)).padding(30).frame(width: 600, height: 600).background(SoriTheme.paper)
-            .onReceive(NotificationCenter.default.publisher(for: Notification.Name("BungBungiWillTerminate"))) { _ in cancelTasks() }
-            .onChange(of: store.showSettings) { _, shown in
-                if !shown { cancelTasks() }
-            }
-            .onChange(of: store.settings.codexPath) { _, _ in
-                cancelTasks(); loginVerified = false; loginMessage = ""
-            }
-            .onDisappear { cancelTasks() }
+            .onChange(of: store.settings.codexPath) { _, _ in copiedLoginCommand = false }
     }
 
     private var general: some View {
@@ -47,8 +35,8 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 12) {
                 Text(settings.transcriptionReady ? "AI 정리" : "AI 준비")
                     .font(.system(size: 14, weight: .medium))
-                caption("녹음을 마치면 저장된 파일을 AI로 정리합니다.")
-                caption("녹음 파일을 OpenAI에 보내 글로 옮기고, Mac에서 문장별 재생 위치를 맞춥니다.")
+                caption("녹음하는 동안 음성을 텍스트로 옮기고, 녹음이 끝나면 전체 내용을 정리합니다.")
+                caption("음성 인식은 Mac에서 처리합니다. 교정과 핵심 요약에는 전사된 텍스트만 AI로 전달합니다.")
                 if !settings.transcriptionReady { caption(settings.transcriptionUnavailableReason) }
             }
             HStack {
@@ -69,22 +57,25 @@ struct SettingsView: View {
             Divider()
             VStack(alignment: .leading, spacing: 12) {
                 Text("AI 연결").font(.system(size: 14, weight: .medium))
-                caption("연결된 ChatGPT 계정을 사용합니다.")
+                caption("교정·제목·핵심 요약에 연결된 ChatGPT 계정을 사용합니다. 연결하지 않아도 녹음과 전사는 가능합니다.")
                 HStack(spacing: 12) {
-                    Button(checkingLogin ? "확인 중…" : "AI 연결 확인") { checkLogin() }
-                        .disabled(checkingLogin || !settings.codexReady)
-                    if checkingLogin { ProgressView().controlSize(.small) }
-                    if settings.codexReady && !loginVerified && !loginMessage.isEmpty {
+                    Button(settings.checkingAI ? "확인 중…" : "AI 연결 확인") {
+                        copiedLoginCommand = false
+                        settings.refreshAIConnection()
+                    }.disabled(settings.checkingAI || !settings.codexReady)
+                    if settings.checkingAI { ProgressView().controlSize(.small) }
+                    if settings.codexReady && settings.connectionState == .loginRequired {
                         Button("로그인 명령 복사") {
                             let executable = "'" + settings.codexPath.replacingOccurrences(of: "'", with: "'\\''") + "'"
                             NSPasteboard.general.clearContents()
                             NSPasteboard.general.setString(executable + " login", forType: .string)
-                            loginMessage = "로그인 명령을 복사했습니다. 터미널에 붙여 넣어 실행하세요."
+                            copiedLoginCommand = true
                         }
                     }
                 }
                 if !settings.codexReady { caption("AI 연결 프로그램을 찾을 수 없습니다. 고급 설정에서 경로를 확인하세요.") }
-                else if !loginMessage.isEmpty { caption(loginMessage) }
+                else { caption(settings.aiConnectionMessage) }
+                if copiedLoginCommand { caption("로그인 명령을 복사했습니다. 터미널에 붙여 넣어 실행하세요.") }
             }
             Divider()
             HStack(alignment: .top, spacing: 16) {
@@ -98,11 +89,16 @@ struct SettingsView: View {
             }
             DisclosureGroup("고급 설정", isExpanded: $advanced) {
                 VStack(alignment: .leading, spacing: 12) {
-                    pathRow("따라읽기 실행 환경", value: $settings.alignmentPython)
-                    pathRow("시간 정렬 모델 폴더", value: $settings.alignmentModels, directory: true)
+                    pathRow("Whisper 실행 파일", value: $settings.whisperPath)
+                    pathRow("음성 인식 모델", value: $settings.whisperModel)
+                    pathRow("음성 감지 모델", value: $settings.vadModel)
                     pathRow("Codex CLI", value: $settings.codexPath)
                     pathRow("FFmpeg", value: $settings.ffmpegPath)
-                    caption("FFmpeg는 파일 가져오기와 전송용 오디오 압축에 사용합니다.")
+                    if let model = settings.selectedModel {
+                        caption("사용 모델: \(model.displayName) · \(CodexModel.reasoningEffort)")
+                    }
+                    caption("앱을 열 때 사용할 수 있는 모델을 확인합니다. Sol을 우선 사용하며, 목록에 없으면 Luna를 선택합니다.")
+                    caption("FFmpeg는 가져온 파일을 녹음 형식으로 변환하는 데에 사용합니다.")
                     Divider().padding(.vertical, 4)
                     HStack(alignment: .top, spacing: 16) {
                         VStack(alignment: .leading, spacing: 8) {
@@ -156,58 +152,6 @@ struct SettingsView: View {
                 Button("선택…") {
                     let panel = NSOpenPanel(); panel.canChooseDirectories = directory; panel.canChooseFiles = !directory; panel.allowsMultipleSelection = false
                     if panel.runModal() == .OK, let url = panel.url { value.wrappedValue = url.path }
-                }
-            }
-        }
-    }
-    @MainActor private func cancelTasks() {
-        // Invalidate the old task before cancelling it: its deferred cleanup may
-        // run after a new check has started or the settings window has reopened.
-        loginGeneration = UUID()
-        loginTask?.cancel(); loginTask = nil
-        loginClient?.stop(); loginClient = nil
-        if checkingLogin { loginMessage = "" }
-        checkingLogin = false
-    }
-    @MainActor private func checkLogin() {
-        cancelTasks()
-        loginVerified = false
-        guard store.settings.codexReady else { loginMessage = "AI 연결 프로그램을 찾을 수 없습니다. 고급 설정에서 경로를 확인해 주세요."; return }
-        checkingLogin = true; loginMessage = ""
-        let attempt = UUID()
-        loginGeneration = attempt
-        let client = CodexAppServerClient(); loginClient = client
-        let executable = URL(fileURLWithPath: store.settings.codexPath)
-        loginTask = Task { @MainActor in
-            let temporary = FileManager.default.temporaryDirectory.appendingPathComponent("bungbungi-login-\(UUID().uuidString)", isDirectory: true)
-            defer {
-                client.stop()
-                try? FileManager.default.removeItem(at: temporary)
-                if loginGeneration == attempt {
-                    checkingLogin = false; loginClient = nil; loginTask = nil
-                }
-            }
-            do {
-                try Task.checkCancellation()
-                try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
-                try await client.start(executable: executable, workingDirectory: temporary)
-                let response = try await client.request(method: "account/read", params: ["refreshToken": false], timeout: 20)
-                try Task.checkCancellation()
-                guard loginGeneration == attempt else { return }
-                // Inspect only the authentication type. Never retain or display
-                // account email, plan details, or authentication material.
-                switch (response["account"] as? [String: Any])?["type"] as? String {
-                case "chatgpt":
-                    loginVerified = true
-                    loginMessage = "AI 연결이 확인되었습니다."
-                case "apiKey":
-                    loginMessage = "ChatGPT 계정으로 로그인해 주세요. API 키 로그인은 사용할 수 없습니다."
-                default:
-                    loginMessage = "계정 로그인이 필요합니다. 로그인 명령을 복사해 터미널에서 실행하세요."
-                }
-            } catch {
-                if loginGeneration == attempt && !Task.isCancelled && !(error is CancellationError) {
-                    loginMessage = "AI 연결을 확인하지 못했습니다. 로그인 명령을 복사해 터미널에서 실행하세요."
                 }
             }
         }

@@ -38,7 +38,7 @@ final class AppStore {
     var showOriginal = false
     let root: URL
     private(set) var repository: LibraryRepository?
-    private var liveTranscription: LiveRecordingTranscription?
+    private var liveTranscription: LocalRecordingTranscription?
     private var pipelineTask: Task<Void, Never>?
     private var toastTask: Task<Void, Never>?
     private var importRunner: ProcessRunner?
@@ -101,7 +101,7 @@ final class AppStore {
     }
 
     func canOrganizeLecture(_ id: UUID) -> Bool {
-        settings.codexReady && canModify(id) && recordings.contains { $0.id == id && !$0.segments.isEmpty }
+        settings.analysisReady && canModify(id) && recordings.contains { $0.id == id && !$0.segments.isEmpty }
     }
 
     func canRename(_ id: UUID) -> Bool {
@@ -191,9 +191,8 @@ final class AppStore {
             recordingID = recording.id
             if settings.transcriptionReady {
                 let snapshot = settings.snapshot
-                let live = LiveRecordingTranscription(audio: try repository.audioURL(for: recording),
-                    directory: try repository.directory(for: recording), codex: URL(fileURLWithPath: snapshot.codex),
-                    ffmpeg: URL(fileURLWithPath: snapshot.ffmpeg), language: snapshot.language)
+                let live = LocalRecordingTranscription(audio: try repository.audioURL(for: recording),
+                    directory: try repository.directory(for: recording), configuration: snapshot.transcription)
                 let id = recording.id
                 live.onIssue = { [weak self] message in
                     guard let self, self.recordingID == id else { return }
@@ -212,8 +211,8 @@ final class AppStore {
         defer { isFinalizingRecording = false; finalizingID = nil }
         let duration = audio.finishRecording(); recordingID = nil
         let live = liveTranscription; liveTranscription = nil
-        await live?.finish()
         let saved = update(id) { $0.duration = duration; $0.status = .queued }
+        await live?.finish(cancel: isTerminating)
         do {
             let url = try repository.audioURL(for: recording)
             let info = try await Task.detached { try AudioEngine.inspect(url) }.value
@@ -298,7 +297,10 @@ final class AppStore {
     func enqueue(_ id: UUID, lectureOnly: Bool = false) {
         guard !isTerminating, recordings.contains(where: { $0.id == id }), id != recordingID, id != finalizingID, id != processingID, !importingIDs.contains(id), !queue.contains(id) else { return }
         // Preserve existing results when the local AI dependencies are unavailable.
-        guard lectureOnly ? settings.codexReady : settings.transcriptionReady else { errorMessage = settings.transcriptionUnavailableReason; return }
+        guard lectureOnly ? settings.analysisReady : settings.transcriptionReady else {
+            errorMessage = lectureOnly ? settings.aiConnectionMessage : settings.transcriptionUnavailableReason
+            return
+        }
         if lectureOnly, !recordings.contains(where: { $0.id == id && !$0.segments.isEmpty }) { return }
         guard update(id, { $0.status = .queued; $0.message = nil }) else { return }
         if lectureOnly { lectureOnlyIDs.insert(id) }
@@ -327,7 +329,7 @@ final class AppStore {
                 }
                 var audio = try repository.audioURL(for: item)
                 if item.audioFileName == nil,
-                   let recovered = try await LiveRecordingTranscription.recoverInterrupted(audio: audio, directory: directory, language: snapshot.language) {
+                   let recovered = try await LocalTranscription.recoverInterrupted(audio: audio, directory: directory, language: snapshot.language) {
                     guard self.update(id, { $0.audioFileName = recovered.lastPathComponent }) else { throw SoriError.message("복구한 음성의 위치를 저장하지 못했습니다.") }
                     audio = recovered
                     if self.selectedID == id { try? self.audio.load(recovered) }
@@ -417,6 +419,7 @@ final class AppStore {
         while isImporting || isFinalizingRecording || isAddingDemo { try? await Task.sleep(for: .milliseconds(50)) }
         let saved = retryUnsavedChanges()
         if !saved { isTerminating = false }
+        else { settings.cancelAIConnectionCheck(); await LocalTranscription.engine.unload() }
         return saved
     }
     func bookmark() {

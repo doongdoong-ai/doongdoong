@@ -164,12 +164,14 @@ enum LiveChunkStore {
 public final class LiveRecordingTranscription {
     private let audio: URL, directory: URL, codex: URL, ffmpeg: URL
     private let language: String
+    private let selection: CodexModel
     private var worker: Task<Void, Never>?
     private var stopping = false
     public var onIssue: ((String) -> Void)?
 
-    public init(audio: URL, directory: URL, codex: URL, ffmpeg: URL, language: String) {
+    public init(audio: URL, directory: URL, codex: URL, ffmpeg: URL, language: String, selection: CodexModel) {
         self.audio = audio; self.directory = directory; self.codex = codex; self.ffmpeg = ffmpeg; self.language = language
+        self.selection = selection
     }
 
     public func start() {
@@ -189,7 +191,8 @@ public final class LiveRecordingTranscription {
                             try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
                             defer { try? FileManager.default.removeItem(at: workspace) }
                             _ = try await SolTranscription.transcribe(audio: LiveChunkStore.audioURL(self.directory, index: entry.chunk.index),
-                                workspace: workspace, output: output, codex: self.codex, ffmpeg: self.ffmpeg, language: self.language)
+                                workspace: workspace, output: output, codex: self.codex, ffmpeg: self.ffmpeg,
+                                language: self.language, selection: self.selection)
                         }
                     }
                 } catch {

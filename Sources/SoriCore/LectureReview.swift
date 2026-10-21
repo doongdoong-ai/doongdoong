@@ -55,8 +55,6 @@ public enum LectureReview {
         let proposals: [Proposal]
         let rejected: [Rejection]
     }
-    public static let model = "gpt-6.1-sol"
-    public static let effort = "medium"
     private static let maximumInput = 180_000
 
     public static func apply(_ proposal: Proposal, to source: [TranscriptSegment],
@@ -133,8 +131,10 @@ public enum LectureReview {
     }
 
     /// All batches validate against the same immutable input. Only the complete revision is committed.
-    public static func review(_ source: [TranscriptSegment], cacheURL: URL,
+    public static func review(_ source: [TranscriptSegment], cacheURL: URL, selection: CodexModel = .sol,
                               request: (Request) async throws -> Data) async throws -> Outcome {
+        let model = selection.rawValue
+        let effort = CodexModel.reasoningEffort
         guard !source.isEmpty, source.count <= 20_000, Set(source.map(\.id)).count == source.count,
               source.allSatisfy({ !$0.text.isEmpty && $0.text.count <= 4000 && $0.start.isFinite && $0.end.isFinite
                   && $0.start >= 0 && $0.end > $0.start }) else { throw invalid("source_shape") }

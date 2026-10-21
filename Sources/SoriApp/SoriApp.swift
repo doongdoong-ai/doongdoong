@@ -41,6 +41,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             captureOffscreen(args: args, path: args[index + 1])
             return
         }
+        store.settings.refreshAIConnection()
         buildMenu()
         let minimum = args.contains("--minimum-window")
         let frame = NSRect(x: 0, y: 0, width: minimum ? 1000 : 1280, height: minimum ? 670 : 820)

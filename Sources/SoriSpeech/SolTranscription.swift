@@ -1,16 +1,16 @@
 import Foundation
 import SoriCore
 
-/// Sol receives one capability bound to one recording, never credentials or arbitrary paths.
+/// The selected model receives one capability bound to one recording, never credentials or arbitrary paths.
 @MainActor
 public enum SolTranscription {
-    public static let model = "gpt-6.1-sol"
-    public static let effort = "medium"
     public nonisolated static let strategy = RecordingChunks.strategy
 
     public static func transcribe(audio: URL, workspace: URL, output: URL,
-                                  codex: URL, ffmpeg: URL, language: String) async throws -> String {
+                                  codex: URL, ffmpeg: URL, language: String, selection: CodexModel) async throws -> String {
         try Task.checkCancellation()
+        let model = selection.rawValue
+        let effort = CodexModel.reasoningEffort
         let client = CodexAppServerClient()
         var finish: AsyncThrowingStream<Void, Error>.Continuation!
         let completion = AsyncThrowingStream<Void, Error> { finish = $0 }
@@ -73,7 +73,7 @@ public enum SolTranscription {
                     return ChunkTranscription.Text(text: raw)
                 }
                 text = result
-                // The original is persisted by the host. Sol must not regenerate or abbreviate it.
+                // The original is persisted by the host. The model must not regenerate or abbreviate it.
                 return ["success": true, "contentItems": [["type": "inputText", "text": "ASR responses for every audio chunk have been saved by the host. Content coverage and sentence timing still require verification. Character count: \(result.count). Return done; do not call another tool."]]]
                 } catch { finish.finish(throwing: error); throw error }
             }

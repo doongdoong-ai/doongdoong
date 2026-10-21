@@ -2,13 +2,15 @@ import Foundation
 import SoriCore
 import SoriSpeech
 
-/// Headless acceptance check: a completed synthetic file, file dictation, forced alignment and Sol analysis.
+/// Headless acceptance check: local Whisper transcription, native timestamps and selected-model analysis.
 @MainActor
 enum IntegrationCheck {
     static func run(store: AppStore, reportURL: URL) async -> Bool {
         var checks: [String] = []
         do {
             guard let repository = store.repository else { throw SoriError.message("No library") }
+            await store.settings.refreshAIConnection()?.value
+            guard let selection = store.settings.selectedModel else { throw SoriError.message(store.settings.aiConnectionMessage) }
             let invalid = store.root.appendingPathComponent("not-audio.txt")
             try Data("This is not audio.".utf8).write(to: invalid)
             defer { try? FileManager.default.removeItem(at: invalid) }
@@ -40,9 +42,9 @@ enum IntegrationCheck {
             guard let recording = store.selected, [.ready, .reviewNeeded].contains(recording.status), recording.segments.count >= 3 else { throw SoriError.message(store.selected?.message ?? store.errorMessage ?? "AI produced no transcript") }
             let processingSeconds = ProcessInfo.processInfo.systemUptime - started
             let outputDirectory = try repository.directory(for: recording)
-            let originalURL = outputDirectory.appendingPathComponent("asr-effective.json")
+            let originalURL = outputDirectory.appendingPathComponent("local-asr-original.json")
             let raw = try JSONSerialization.jsonObject(with: Data(contentsOf: originalURL)) as? [String: Any]
-            guard let text = raw?["text"] as? String else { throw SoriError.message("Missing ASR original") }
+            guard raw?["text"] is String else { throw SoriError.message("Missing ASR original") }
             guard FileManager.default.fileExists(atPath: outputDirectory.appendingPathComponent("final-review.json").path) else { throw SoriError.message("Final review did not finish") }
             guard let title = recording.generatedTitle, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                   recording.lectureHighlights != nil,
@@ -50,8 +52,8 @@ enum IntegrationCheck {
                   analysis["outcome"] as? String == "complete" else {
                 throw SoriError.message("Lecture title and summary did not finish")
             }
-            let alignedURL = outputDirectory.appendingPathComponent("aligned-transcript.json")
-            let aligned = try TranscriptAlignment.decode(Data(contentsOf: alignedURL), text: text, duration: recording.duration)
+            struct Original: Decodable { let segments: [TranscriptSegment] }
+            let aligned = try JSONDecoder().decode(Original.self, from: Data(contentsOf: originalURL)).segments
             guard aligned.count == recording.segments.count,
                   zip(aligned, recording.segments).allSatisfy({ before, after in
                       before.id == after.id && before.start == after.start && before.end == after.end
@@ -66,8 +68,8 @@ enum IntegrationCheck {
                     throw SoriError.message("Sentence intervals are invalid")
                 }
             }
-            checks.append("completed audio file processed through Sol with bounded file chunks and acoustic gap recovery")
-            checks.append("real Sol lecture analysis through the existing ChatGPT login")
+            checks.append("completed audio file processed through \(selection.rawValue) with bounded file chunks and acoustic gap recovery")
+            checks.append("real \(selection.rawValue) lecture analysis through the existing ChatGPT login")
             checks.append("whole-lecture final review preserves original text, IDs and acoustic playback times")
             checks.append("approximate sentence timings excluded from follow-along: \(recording.segments.filter { !$0.hasReliableTiming }.count); suspected gaps: \((recording.reviewRanges ?? []).count)")
             checks.append(usesExisting ? "lecture transcript has ordered, bounded acoustic intervals; uncertain positions are explicitly marked" : "beginning and end of the synthetic recording retained with ordered, bounded intervals")
@@ -125,7 +127,7 @@ enum IntegrationCheck {
             guard subtitles.contains(" --> ") else { throw SoriError.message("SRT export failed") }
             try Data(subtitles.utf8).write(to: store.root.appendingPathComponent("acceptance.srt"))
             checks.append("subtitle export")
-            let report: [String: Any] = ["passed": true, "checks": checks, "duration": saved.duration, "segments": saved.segments.count, "processingSeconds": processingSeconds, "scope": "batch-file-transcription-and-local-library", "model": SolTranscription.model, "textCorrection": LectureReviewPrompts.version, "timing": "mms-ctc-forced-alignment", "syntheticAudio": !usesExisting]
+            let report: [String: Any] = ["passed": true, "checks": checks, "duration": saved.duration, "segments": saved.segments.count, "processingSeconds": processingSeconds, "scope": "batch-file-transcription-and-local-library", "model": selection.rawValue, "textCorrection": LectureReviewPrompts.version, "timing": "whisper-native", "syntheticAudio": !usesExisting]
             try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: reportURL, options: .atomic)
             return true
         } catch {

@@ -108,6 +108,28 @@ final class LectureReviewTests: XCTestCase {
         XCTAssertEqual(refreshed, 3)
     }
 
+    func testChangingModelInvalidatesFinalAndPartialReviewCaches() async throws {
+        let directory = try root(); defer { try? FileManager.default.removeItem(at: directory) }
+        let source = (0..<50).map { segment($0, "보존할 강의 문장 \($0)") }
+        let cache = directory.appendingPathComponent("review.json")
+        var calls = 0
+        for model in [CodexModel.sol, .luna] {
+            let result = try await LectureReview.review(source, cacheURL: cache, selection: model) { _ in
+                calls += 1; return self.noop
+            }
+            XCTAssertFalse(result.cached)
+            let receipt = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: cache)) as? [String: Any])
+            XCTAssertEqual(receipt["model"] as? String, model.rawValue)
+            XCTAssertEqual(receipt["effort"] as? String, "medium")
+        }
+        XCTAssertEqual(calls, 4)
+        let cached = try await LectureReview.review(source, cacheURL: cache, selection: .luna) { _ in
+            XCTFail("Same model must reuse its cache"); return self.noop
+        }
+        XCTAssertTrue(cached.cached)
+        XCTAssertEqual(cached.segments, source)
+    }
+
     func testLargeLectureVisitsEveryContextPartAndEverySentence() async throws {
         let directory = try root(); defer { try? FileManager.default.removeItem(at: directory) }
         let source = (0..<400).map { segment($0, String(repeating: "긴 강의 문장입니다. ", count: 20) + "끝 \($0)") }

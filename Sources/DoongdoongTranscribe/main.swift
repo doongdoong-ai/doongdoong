@@ -1,26 +1,28 @@
 import Foundation
-import SoriSpeech
-import SoriCore
+import DoongdoongTranscription
 
-@main
-struct TranscribeCommand {
-    @MainActor static func main() async {
+@main struct TranscribeCLI {
+    static func main() async {
         let args = Array(CommandLine.arguments.dropFirst())
-        guard args.count == 4 else {
-            FileHandle.standardError.write(Data("Usage: DoongdoongTranscribe AUDIO OUTPUT_JSON CODEX FFMPEG\nSplits one completed recording into files of at most five minutes, resumes saved chunks, and uses the existing ChatGPT login.\n".utf8))
+        guard args.count == 5 || args.count == 6 else {
+            print("Usage: DoongdoongTranscribe <16k-mono.wav> <output-directory> <whisper-server> <model.bin> <vad.bin> [language]")
             exit(2)
         }
-        let workspace = FileManager.default.temporaryDirectory.appendingPathComponent("doongdoong-asr-\(UUID().uuidString)")
+        let engine = WhisperEngine()
         do {
-            try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-            defer { try? FileManager.default.removeItem(at: workspace) }
-            let output = URL(fileURLWithPath: args[1])
-            guard !FileManager.default.fileExists(atPath: output.path) else { throw SoriError.message("출력 파일이 이미 존재합니다.") }
-            let text = try await SolTranscription.transcribe(audio: URL(fileURLWithPath: args[0]), workspace: workspace,
-                output: output, codex: URL(fileURLWithPath: args[2]), ffmpeg: URL(fileURLWithPath: args[3]), language: "ko")
-            print("전사 완료 · \(text.count)자 · \(output.path)")
+            let config = WhisperConfiguration(executable: URL(fileURLWithPath: args[2]), model: URL(fileURLWithPath: args[3]),
+                                              vadModel: URL(fileURLWithPath: args[4]), language: args.count == 6 ? args[5] : "ko")
+            let output = URL(fileURLWithPath: args[1], isDirectory: true)
+            let session = TranscriptionSession(audio: URL(fileURLWithPath: args[0]), directory: output, configuration: config, recognizer: engine)
+            let segments = try await session.processAvailable(final: true)
+            let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            try encoder.encode(segments).write(to: output.appendingPathComponent("transcript.json"), options: .atomic)
+            print("\(segments.count) segments → \(output.appendingPathComponent("transcript.json").path)")
+            await engine.unload()
         } catch {
-            FileHandle.standardError.write(Data("\(error.localizedDescription)\n".utf8)); exit(1)
+            await engine.unload()
+            FileHandle.standardError.write(Data((error.localizedDescription + "\n").utf8))
+            exit(1)
         }
     }
 }

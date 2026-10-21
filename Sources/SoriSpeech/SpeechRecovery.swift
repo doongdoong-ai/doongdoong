@@ -13,7 +13,7 @@ public enum SpeechRecovery {
     @MainActor
     public static func recover(_ report: TranscriptAlignment.Report, audio: URL, directory: URL, workspace: URL,
                                duration: Double, codex: URL, ffmpeg: URL, python: URL,
-                               modelDirectory: URL, language: String) async throws -> TranscriptAlignment.Report {
+                               modelDirectory: URL, language: String, selection: CodexModel) async throws -> TranscriptAlignment.Report {
         guard !report.reviewRanges.isEmpty else { return report }
         let recoveryLanguage = Self.recoveryLanguage(requested: language, source: report.segments)
         let fingerprint = try await RecordingChunks.hashFile(audio)
@@ -42,7 +42,7 @@ public enum SpeechRecovery {
                 try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
                 do {
                     text = try await SolTranscription.transcribe(audio: clip, workspace: work, output: output,
-                        codex: codex, ffmpeg: ffmpeg, language: recoveryLanguage)
+                        codex: codex, ffmpeg: ffmpeg, language: recoveryLanguage, selection: selection)
                 } catch {
                     if error is CancellationError || Task.isCancelled { throw CancellationError() }
                     // A failed recovery is never allowed to discard the main transcript.

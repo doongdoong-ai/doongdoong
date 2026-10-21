@@ -33,7 +33,7 @@ public struct TranscriptSegment: Codable, Identifiable, Equatable, Sendable {
     public var originalText: String
     // Missing in legacy recordings. Approximate positions never drive follow-along.
     public var timingQuality: String?
-    public var hasReliableTiming: Bool { timingQuality == nil || timingQuality == "aligned" }
+    public var hasReliableTiming: Bool { timingQuality == nil || timingQuality == "aligned" || timingQuality == "whisper" }
     public init(id: Int, start: Double, end: Double, text: String, originalText: String? = nil) {
         self.id = id; self.start = start; self.end = end; self.text = text
         self.originalText = originalText ?? text
