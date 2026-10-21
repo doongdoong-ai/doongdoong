@@ -3,11 +3,13 @@ import AVFoundation
 import Observation
 import SoriCore
 import SoriSpeech
+import DoongdoongAI
+import DoongdoongTranscription
 import UniformTypeIdentifiers
 
 @Observable @MainActor
 final class AppStore {
-    let settings = AppSettings()
+    let settings: AppSettings
     let audio = AudioEngine()
     var projects: [Project] = []
     var recordings: [Recording] = []
@@ -27,6 +29,7 @@ final class AppStore {
     private var lectureOnlyIDs: Set<UUID> = []
     var processingProgress: ProcessingProgress?
     var processingStartedAt: Date?
+    var processingStepStartedUptime: TimeInterval?
     var processingIssues: Set<ProcessingProgress.Step> = []
     var processingCompletedSteps: Set<ProcessingProgress.Step> = []
     var processingSummaryOnly = false
@@ -43,16 +46,30 @@ final class AppStore {
     let root: URL
     private(set) var repository: LibraryRepository?
     private var liveTranscription: LocalRecordingTranscription?
+    private var finalizingTranscription: LocalRecordingTranscription?
     private var pipelineTask: Task<Void, Never>?
     private var toastTask: Task<Void, Never>?
     private var importRunner: ProcessRunner?
     private var finalizingID: UUID?
     private var isTerminating = false
     private var isAddingDemo = false
+    private(set) var isSleeping = false
+    private(set) var isPreparingForSleep = false
+    private(set) var recoveringIDs: Set<UUID> = []
+    private var sleepTask: Task<Void, Never>?
+    private var sleepGeneration = UUID()
+    private var wakeResumeIDs: [UUID] = []
+    private let recognizer: any SpeechRecognizer
+    private let textProvider: (any TextGenerationProvider)?
 
-    init() {
+    init(root explicitRoot: URL? = nil, settings: AppSettings? = nil,
+         recognizer: any SpeechRecognizer = LocalTranscription.engine, textProvider: (any TextGenerationProvider)? = nil) {
+        self.settings = settings ?? AppSettings()
+        self.recognizer = recognizer; self.textProvider = textProvider
         let args = ProcessInfo.processInfo.arguments
-        if let index = args.firstIndex(of: "--library"), args.count > index + 1 {
+        if let explicitRoot {
+            root = explicitRoot
+        } else if let index = args.firstIndex(of: "--library"), args.count > index + 1 {
             root = URL(fileURLWithPath: args[index + 1], isDirectory: true)
         } else {
             let music = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Music", isDirectory: true)
@@ -69,14 +86,17 @@ final class AppStore {
         } catch { errorMessage = error.localizedDescription }
         audio.onRecordingError = { [weak self] error in
             guard let self else { return }
-            if let id = self.recordingID { self.update(id) { $0.duration = self.audio.recordingTime; $0.status = .failed; $0.message = error } }
+            if let id = self.recordingID { self.update(id) {
+                $0.duration = self.audio.recordingTime; $0.status = .failed; $0.message = error
+                $0.work = .init(kind: .recording, state: .interrupted, cause: self.isSleeping ? .sleep : .unexpected)
+            } }
             let live = self.liveTranscription; self.liveTranscription = nil
             Task { await live?.finish() }
             self.recordingID = nil; self.errorMessage = error
         }
         audio.onPlaybackError = { [weak self] error in self?.errorMessage = error }
-        if let first = recordings.first { select(first.id) }
-        if args.contains("--demo") { Task { await addDemo() } }
+        if let first = recordings.first(where: { $0.work?.state == .interrupted }) ?? recordings.first { select(first.id) }
+        if explicitRoot == nil, args.contains("--demo") { Task { await addDemo() } }
     }
 
     var selected: Recording? { recordings.first { $0.id == selectedID } }
@@ -102,6 +122,11 @@ final class AppStore {
     }
     func updateProgress(_ value: ProcessingProgress, for id: UUID) {
         guard processingID.map({ $0 == id }) ?? (finalizingID == id) else { return }
+        guard !isSleeping, !isPreparingForSleep else { return }
+        if processingProgress?.stage.step != value.stage.step { processingStepStartedUptime = ProcessInfo.processInfo.systemUptime }
+        if recordings.first(where: { $0.id == id })?.work?.step != value.stage.step {
+            update(id) { $0.work?.step = value.stage.step }
+        }
         if processingStartedAt == nil { processingStartedAt = Date() }
         if let previous = processingProgress, previous.stage.step != value.stage.step,
            !processingIssues.contains(previous.stage.step) {
@@ -112,7 +137,7 @@ final class AppStore {
     }
 
     func canModify(_ id: UUID) -> Bool {
-        !isTerminating && recordings.contains(where: { $0.id == id }) && id != recordingID && id != finalizingID && id != processingID && !importingIDs.contains(id) && !queue.contains(id)
+        !isTerminating && !isSleeping && !isPreparingForSleep && !recoveringIDs.contains(id) && recordings.contains(where: { $0.id == id }) && id != recordingID && id != finalizingID && id != processingID && !importingIDs.contains(id) && !queue.contains(id)
     }
 
     func canTranscribe(_ id: UUID) -> Bool {
@@ -143,7 +168,7 @@ final class AppStore {
         guard selectedID != id else { return }
         selectedID = id; transcriptSearch = ""; followPlayback = true
         audio.stopPlayback()
-        guard let item = selected, item.id != recordingID, item.id != finalizingID, !importingIDs.contains(item.id), let repository else { return }
+        guard let item = selected, item.id != recordingID, item.id != finalizingID, !importingIDs.contains(item.id), !recoveringIDs.contains(item.id), !(item.work?.kind == .recording && item.audioFileName == nil), let repository else { return }
         do {
             let url = try repository.audioURL(for: item)
             if FileManager.default.fileExists(atPath: url.path) { try audio.load(url) }
@@ -180,18 +205,18 @@ final class AppStore {
     }
 
     func requestRecording() {
-        guard !audio.isRecording, !isStartingRecording, !isFinalizingRecording, !isTerminating, repository != nil else { return }
+        guard !audio.isRecording, !isStartingRecording, !isFinalizingRecording, !isTerminating, !isSleeping, !isPreparingForSleep, repository != nil else { return }
         showRecordingDestination = true
     }
 
     func startRecording(in projectID: UUID) async {
-        guard !audio.isRecording, !isStartingRecording, !isFinalizingRecording, !isTerminating, let repository else { return }
+        guard !audio.isRecording, !isStartingRecording, !isFinalizingRecording, !isTerminating, !isSleeping, !isPreparingForSleep, let repository else { return }
         isStartingRecording = true; defer { isStartingRecording = false }
         guard await audio.requestMicrophone() else {
             errorMessage = "마이크 접근이 허용되지 않았습니다. 시스템 설정 → 개인정보 보호 및 보안 → 마이크에서 둥둥이를 허용해 주세요."
             return
         }
-        guard !isTerminating else { return }
+        guard !isTerminating, !isSleeping, !isPreparingForSleep else { return }
         do {
             guard let project = projects.first(where: { $0.id == projectID }) else {
                 throw SoriError.message("녹음을 저장할 폴더가 없습니다. 폴더를 먼저 만들어 주세요.")
@@ -199,9 +224,11 @@ final class AppStore {
             let title = Date().formatted(.dateTime.month(.twoDigits).day(.twoDigits).hour().minute()) + " 녹음"
             var recording = try repository.createRecording(project: project, title: title)
             recording.status = .recording
+            recording.work = .init(kind: .recording, state: .running)
             recordings.insert(recording, at: 0)
             do {
                 try repository.save(recording)
+                try LocalTranscription.prepareRecording(directory: repository.directory(for: recording))
                 try audio.startRecording(to: repository.audioURL(for: recording))
             } catch {
                 update(recording.id) { $0.status = .failed; $0.message = error.localizedDescription }
@@ -234,12 +261,18 @@ final class AppStore {
             updateProgress(.init(stage: .finishingRecording, detail: "녹음을 저장하고 처리 중인 음성 구간을 마무리합니다."), for: id)
         }
         defer {
-            isFinalizingRecording = false; finalizingID = nil
+            isFinalizingRecording = false; finalizingID = nil; finalizingTranscription = nil
             if processingID == nil { processingProgress = nil; processingStartedAt = nil }
         }
         let duration = audio.finishRecording(); recordingID = nil
         let live = liveTranscription; liveTranscription = nil
-        let saved = update(id) { $0.duration = duration; $0.status = .queued }
+        finalizingTranscription = live
+        let saved = update(id) {
+            $0.duration = duration; $0.status = .queued
+            $0.work = .init(kind: .transcription,
+                state: enqueueForTranscription && !self.isTerminating ? .queued : .interrupted,
+                cause: self.isTerminating ? .appClosed : enqueueForTranscription ? nil : .userStopped)
+        }
         await live?.finish(cancel: isTerminating)
         do {
             let url = try repository.audioURL(for: recording)
@@ -255,7 +288,7 @@ final class AppStore {
     }
 
     func importAudio() {
-        guard !isImporting, !isTerminating, repository != nil else { return }
+        guard !isImporting, !isTerminating, !isSleeping, !isPreparingForSleep, repository != nil else { return }
         let panel = NSOpenPanel(); panel.allowedContentTypes = [.audio, .movie]
         panel.allowsMultipleSelection = true; panel.message = "녹음 파일을 작업 폴더에 복사합니다."
         if panel.runModal() == .OK { let urls = panel.urls; Task { await importFiles(urls) } }
@@ -269,7 +302,7 @@ final class AppStore {
     }
 
     func importFiles(_ urls: [URL]) async {
-        guard !isImporting, !isTerminating, !urls.isEmpty, let repository else { return }
+        guard !isImporting, !isTerminating, !isSleeping, !isPreparingForSleep, !urls.isEmpty, let repository else { return }
         guard let project = projects.first(where: { $0.id == selectedProjectID }) ?? projects.first else {
             errorMessage = "파일을 저장할 폴더를 먼저 만들어 주세요."; return
         }
@@ -279,7 +312,7 @@ final class AppStore {
         isImporting = true; defer { isImporting = false }
         var failures: [String] = []
         for source in urls {
-            if isTerminating || Task.isCancelled { break }
+            if isTerminating || isSleeping || Task.isCancelled { break }
             var importedID: UUID?
             let staging = root.appendingPathComponent(".import-\(UUID().uuidString)", isDirectory: true)
             let accessed = source.startAccessingSecurityScopedResource()
@@ -299,11 +332,11 @@ final class AppStore {
                     "-vn", "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", partial.path
                 ], directory: staging, log: staging.appendingPathComponent("import.log"))
                 try Task.checkCancellation()
-                if isTerminating { throw CancellationError() }
+                if isTerminating || isSleeping { throw CancellationError() }
                 let info = try await Task.detached { try AudioEngine.inspect(partial) }.value
                 try Task.checkCancellation()
                 guard info.duration >= 0.3 else { throw SoriError.message("오디오가 너무 짧습니다. 1초 이상의 파일을 선택해 주세요.") }
-                if isTerminating { throw CancellationError() }
+                if isTerminating || isSleeping { throw CancellationError() }
                 let recording = try repository.createRecording(project: project, title: source.deletingPathExtension().lastPathComponent)
                 importedID = recording.id; importingIDs.insert(recording.id); recordings.insert(recording, at: 0)
                 let destination = try repository.audioURL(for: recording)
@@ -323,25 +356,30 @@ final class AppStore {
     }
 
     func enqueue(_ id: UUID, lectureOnly: Bool = false) {
-        guard !isTerminating, recordings.contains(where: { $0.id == id }), id != recordingID, id != finalizingID, id != processingID, !importingIDs.contains(id), !queue.contains(id) else { return }
+        guard !isTerminating, !isSleeping, !isPreparingForSleep, !recoveringIDs.contains(id), recordings.contains(where: { $0.id == id }), id != recordingID, id != finalizingID, id != processingID, !importingIDs.contains(id), !queue.contains(id) else { return }
+        if let item = recordings.first(where: { $0.id == id }), item.work?.kind == .recording,
+           item.audioFileName == nil || item.duration <= 0 { return }
         // Preserve existing results when the local AI dependencies are unavailable.
         guard lectureOnly ? settings.analysisReady : settings.transcriptionReady else {
             errorMessage = lectureOnly ? settings.aiConnectionMessage : settings.transcriptionUnavailableReason
             return
         }
         if lectureOnly, !recordings.contains(where: { $0.id == id && !$0.segments.isEmpty }) { return }
-        guard update(id, { $0.status = .queued; $0.message = nil }) else { return }
+        guard update(id, { $0.status = .queued; $0.message = nil; $0.work = .init(kind: lectureOnly ? .summary : .transcription) }) else { return }
         if lectureOnly { lectureOnlyIDs.insert(id) }
         queue.append(id); runNext()
     }
 
     private func runNext() {
-        guard !isTerminating, processingID == nil, !queue.isEmpty else { return }
-        let id = queue.removeFirst(); processingID = id
+        guard !isTerminating, !isSleeping, !isPreparingForSleep, processingID == nil, !queue.isEmpty else { return }
+        let id = queue.removeFirst()
+        guard update(id, { $0.work?.state = .running; $0.work?.cause = nil }) else { return }
+        processingID = id
         processingProgress = nil; processingStartedAt = Date(); processingIssues = []; processingCompletedSteps = []
-        updateProgress(.init(stage: .preparing, detail: "녹음 길이와 저장된 전사 구간을 확인합니다."), for: id)
         let lectureOnly = lectureOnlyIDs.remove(id) != nil
         processingSummaryOnly = lectureOnly
+        updateProgress(.init(stage: lectureOnly ? .analysis : .preparing,
+            detail: lectureOnly ? "저장된 전사문에서 핵심 요약을 준비합니다." : "녹음 길이와 저장된 전사 구간을 확인합니다."), for: id)
         let snapshot = settings.snapshot
         pipelineTask = Task { [weak self] in
             guard let self else { return }
@@ -356,10 +394,11 @@ final class AppStore {
                     guard self.update(id, { $0.status = .polishing }) else { return }
                     self.processingCompletedSteps = []
                     let lecture = try await TranscriptionPipeline.organize(segments: item.segments, directory: directory, settings: snapshot,
+                        provider: self.textProvider,
                         onProgress: { [weak self] value in self?.updateProgress(value, for: id) })
                     try Task.checkCancellation()
                     self.updateProgress(.init(stage: .saving, detail: "제목과 핵심 요약을 보관함에 저장합니다."), for: id)
-                    guard self.update(id, { self.apply(lecture, to: &$0); $0.status = $0.completedStatus; $0.message = nil }) else { return }
+                    guard self.update(id, { self.apply(lecture, to: &$0); $0.status = $0.completedStatus; $0.message = nil; $0.work = nil }) else { return }
                     self.notify("핵심 요약을 정리했습니다")
                     return
                 }
@@ -379,8 +418,9 @@ final class AppStore {
                 }
                 let result = try await TranscriptionPipeline.transcribe(
                     audio: audio, directory: directory, duration: info.duration, settings: snapshot,
+                    recognizer: self.recognizer, provider: self.textProvider,
                     onProgress: { [weak self] value in self?.updateProgress(value, for: id) },
-                    onTranscribed: { segments in
+                    onReviewed: { segments in
                         // Keep any previous user edits until a complete replacement is ready.
                         guard self.update(id, {
                             if $0.segments.isEmpty { $0.segments = segments }
@@ -400,7 +440,7 @@ final class AppStore {
                     guard self.update(id, {
                         $0.segments = []; $0.reviewRanges = nil
                         $0.lectureHighlights = nil
-                        $0.status = .noSpeech
+                        $0.status = .noSpeech; $0.work = nil
                         $0.message = previous.segments.isEmpty ? nil : "이전 텍스트도 작업 폴더에 보관했습니다."
                     }) else { return }
                     self.notify("감지된 음성이 없어요 · \(item.title)")
@@ -411,6 +451,7 @@ final class AppStore {
                     }
                     guard self.update(id, {
                         $0.segments = segments; $0.reviewRanges = reviewRanges; $0.status = $0.completedStatus; $0.message = warning
+                        $0.work = nil
                         $0.lectureHighlights = nil
                         if let lecture { self.apply(lecture, to: &$0) }
                     }) else { return }
@@ -420,15 +461,136 @@ final class AppStore {
             } catch {
                 self.update(id) {
                     $0.status = $0.segments.isEmpty ? .failed : $0.completedStatus
-                    $0.message = error is CancellationError ? "AI 정리를 중지했습니다. 녹음은 저장되어 있으며 다시 시도할 수 있습니다." : error.localizedDescription
+                    if $0.work?.state != .interrupted { $0.work?.interrupt(error is CancellationError ? .userStopped : .unexpected) }
+                    $0.message = error is CancellationError ? nil : error.localizedDescription
                 }
             }
         }
     }
 
     func cancelProcessing(_ id: UUID) {
-        if processingID == id { pipelineTask?.cancel() }
-        else if queue.contains(id) { queue.removeAll { $0 == id }; lectureOnlyIDs.remove(id); update(id) { $0.status = $0.segments.isEmpty ? .queued : $0.completedStatus; $0.message = "AI 정리 대기를 취소했습니다. 녹음은 저장되어 있습니다." } }
+        if wakeResumeIDs.contains(id) {
+            wakeResumeIDs.removeAll { $0 == id }
+            update(id) { $0.work?.interrupt(.userStopped) }
+        }
+        if processingID == id {
+            update(id) { $0.work?.interrupt(.userStopped) }
+            pipelineTask?.cancel()
+        } else if queue.contains(id) {
+            queue.removeAll { $0 == id }; lectureOnlyIDs.remove(id)
+            update(id) { $0.status = $0.segments.isEmpty ? .queued : $0.completedStatus; $0.work?.interrupt(.userStopped); $0.message = nil }
+        }
+    }
+
+    /// The notification handler calls this synchronously before returning to macOS.
+    /// Only the bounded metadata flush is synchronous; inference teardown is async.
+    func systemWillSleep() {
+        guard !isTerminating, !isSleeping else { return }
+        isSleeping = true
+        NotificationCenter.default.post(name: Notification.Name("BungBungiWillSave"), object: nil)
+        audio.pauseForSleep()
+        if let id = recordingID {
+            update(id) { $0.duration = self.audio.recordingTime; $0.work?.interrupt(.sleep); $0.message = nil }
+        }
+        // Preserve the active item first, then its queue order, across repeated sleeps.
+        for id in [processingID, finalizingID].compactMap({ $0 }) + queue where !wakeResumeIDs.contains(id) {
+            if recordings.first(where: { $0.id == id })?.work?.cause != .userStopped { wakeResumeIDs.append(id) }
+        }
+        for id in wakeResumeIDs { update(id) { $0.work?.interrupt(.sleep) } }
+        queue.removeAll(); lectureOnlyIDs.removeAll()
+        pipelineTask?.cancel(); importRunner?.cancel()
+        let live = liveTranscription; liveTranscription = nil
+        let draining = finalizingTranscription
+        let job = pipelineTask, previous = sleepTask
+        isPreparingForSleep = true
+        let generation = UUID(); sleepGeneration = generation
+        sleepTask = Task { [weak self] in
+            await previous?.value
+            await live?.finish(cancel: true)
+            await draining?.finish(cancel: true)
+            await job?.value
+            while self?.isFinalizingRecording == true { try? await Task.sleep(for: .milliseconds(20)) }
+            await LocalTranscription.engine.unload()
+            guard let self, self.sleepGeneration == generation else { return }
+            self.isPreparingForSleep = false
+        }
+    }
+
+    @discardableResult func systemDidWake() -> Task<Void, Never> {
+        isSleeping = false
+        let preparation = sleepTask, generation = sleepGeneration
+        return Task { [weak self] in
+            await preparation?.value
+            guard let self, !self.isSleeping, !self.isTerminating, self.sleepGeneration == generation else { return }
+            let ids = self.wakeResumeIDs; self.wakeResumeIDs = []
+            for id in ids {
+                guard let item = self.recordings.first(where: { $0.id == id }), item.work?.cause == .sleep,
+                      self.canResumeWork(id) else { continue }
+                self.enqueue(id, lectureOnly: item.work?.kind == .summary)
+            }
+        }
+    }
+
+    func toggleRecordingPause() {
+        guard !isSleeping, !isPreparingForSleep, let id = recordingID else { return }
+        audio.pauseRecording()
+        guard recordingID == id else { return } // the recorder may report an input failure
+        update(id) {
+            $0.duration = self.audio.recordingTime
+            $0.work = .init(kind: .recording, state: .running)
+            $0.message = nil
+        }
+        if !audio.isPausedRecording, liveTranscription == nil, settings.transcriptionReady,
+           let item = recordings.first(where: { $0.id == id }), let repository {
+            do {
+                let live = LocalRecordingTranscription(audio: try repository.audioURL(for: item),
+                    directory: try repository.directory(for: item), configuration: settings.snapshot.transcription)
+                live.onIssue = { [weak self] message in self?.update(id) { $0.message = message } }
+                liveTranscription = live; live.start()
+            } catch { errorMessage = error.localizedDescription }
+        }
+    }
+
+    func canResumeWork(_ id: UUID) -> Bool {
+        guard canModify(id), let item = recordings.first(where: { $0.id == id }), item.work?.state == .interrupted else { return false }
+        if item.work?.kind == .recording && (item.audioFileName == nil || item.duration <= 0) { return false }
+        return settings.analysisReady && (item.work?.kind == .summary || settings.transcriptionReady)
+    }
+
+    func resumeWork(_ id: UUID) {
+        guard let item = recordings.first(where: { $0.id == id }), canResumeWork(id) else { return }
+        enqueue(id, lectureOnly: item.work?.kind == .summary)
+    }
+
+    /// Repairs only app-owned interrupted recordings. No microphone or AI runs.
+    func recoverRecordings() async {
+        let ids = recordings.filter {
+            $0.work?.kind == .recording && $0.work?.state == .interrupted && ($0.audioFileName == nil || $0.duration <= 0)
+        }.map(\.id)
+        for id in ids {
+            guard !isTerminating, id != recordingID, id != processingID, !recoveringIDs.contains(id),
+                  let item = recordings.first(where: { $0.id == id }), let repository else { continue }
+            recoveringIDs.insert(id)
+            defer { recoveringIDs.remove(id) }
+            do {
+                let directory = try repository.directory(for: item)
+                var url = try repository.audioURL(for: item)
+                if item.audioFileName == nil {
+                    // Also handles old recordings that crashed before the ASR marker existed.
+                    try LocalTranscription.prepareRecording(directory: directory)
+                    if let repaired = try await LocalTranscription.recoverInterrupted(audio: url, directory: directory, language: settings.language) { url = repaired }
+                }
+                let source = url
+                let info = try await Task.detached { try AudioEngine.inspect(source) }.value
+                guard update(id, {
+                    $0.audioFileName = source.lastPathComponent; $0.duration = info.duration; $0.waveform = info.waveform
+                    $0.status = $0.segments.isEmpty ? .queued : $0.completedStatus
+                }) else { continue }
+                if selectedID == id { try audio.load(source) }
+            } catch {
+                update(id) { $0.message = "저장된 음성을 확인하지 못했습니다. 원본은 그대로 보관했습니다. 저장 공간과 파일을 확인해 주세요." }
+            }
+        }
     }
     @discardableResult func update(_ id: UUID, _ change: (inout Recording) -> Void) -> Bool {
         guard let index = recordings.firstIndex(where: { $0.id == id }), let repository else { return false }
@@ -447,8 +609,12 @@ final class AppStore {
     /// Return false to keep the app open when the latest metadata could not be saved.
     func prepareForTermination() async -> Bool {
         isTerminating = true
+        await sleepTask?.value
+        for id in [processingID].compactMap({ $0 }) + queue {
+            update(id) { $0.work?.interrupt(.appClosed) }
+        }
         pipelineTask?.cancel(); importRunner?.cancel()
-        for id in queue { update(id) { $0.status = $0.segments.isEmpty ? .queued : $0.completedStatus; $0.message = "앱 종료로 AI 정리 대기를 중지했습니다. 다시 시도할 수 있습니다." } }
+        for id in queue { update(id) { $0.status = $0.segments.isEmpty ? .queued : $0.completedStatus; $0.message = nil } }
         queue.removeAll()
         lectureOnlyIDs.removeAll()
         await stopRecording(enqueueForTranscription: false)
@@ -548,7 +714,7 @@ final class AppStore {
             let transcript = resources.appendingPathComponent("welcome.json")
             guard let project = projects.first else { return }
             let info = try await Task.detached { try AudioEngine.inspect(source) }.value
-            guard !isTerminating else { return }
+            guard !isTerminating, !isSleeping, !isPreparingForSleep else { return }
             let originalSegments = try Transcript.parseWhisper(Data(contentsOf: transcript), duration: info.duration)
             var item = try repository.createRecording(project: project, title: "둥둥이, 처음 만나는 순간")
             try FileManager.default.copyItem(at: source, to: repository.audioURL(for: item))

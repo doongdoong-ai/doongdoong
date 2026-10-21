@@ -2,6 +2,40 @@ import XCTest
 @testable import SoriCore
 
 final class LibraryTests: XCTestCase {
+    func testSummaryRetryIntentAndExistingEditsSurviveRepeatedLaunches() throws {
+        let repo = try LibraryRepository(root: root)
+        let project = try repo.createProject(name: "강의")
+        var item = try repo.createRecording(project: project, title: "사용자 제목")
+        item.status = .polishing; item.notes = "작성 중이던 메모"
+        item.segments = [.init(id: 7, start: 2, end: 3, text: "직접 수정한 문장", originalText: "원문")]
+        item.work = .init(kind: .summary, state: .running, step: .summary)
+        try repo.save(item)
+        for _ in 0..<2 {
+            let loaded = try XCTUnwrap(LibraryRepository(root: root).load().recordings.first)
+            XCTAssertEqual(loaded.work?.kind, .summary)
+            XCTAssertEqual(loaded.work?.state, .interrupted)
+            XCTAssertEqual(loaded.work?.cause, .unexpected)
+            XCTAssertEqual(loaded.work?.requestedAt.timeIntervalSince1970 ?? 0, item.work!.requestedAt.timeIntervalSince1970, accuracy: 1)
+            XCTAssertEqual(loaded.segments, item.segments)
+            XCTAssertEqual(loaded.notes, item.notes)
+        }
+    }
+
+    func testQueuedWorkIsRecoverableAndRecoveredPathStaysInsideRecording() throws {
+        let repo = try LibraryRepository(root: root)
+        let project = try repo.createProject(name: "복구")
+        var item = try repo.createRecording(project: project, title: "대기 중")
+        item.work = .init(kind: .transcription)
+        item.audioFileName = "audio-local-recovered.wav"
+        try repo.save(item)
+        let loaded = try XCTUnwrap(repo.load().recordings.first)
+        XCTAssertEqual(loaded.work?.state, .interrupted)
+        XCTAssertEqual(try repo.audioURL(for: loaded).lastPathComponent, "audio-local-recovered.wav")
+        for path in ["../audio-local-recovered.wav", "/tmp/audio.wav", "unrelated.wav"] {
+            item.audioFileName = path
+            XCTAssertThrowsError(try repo.audioURL(for: item))
+        }
+    }
     var root: URL!
     override func setUpWithError() throws { root = FileManager.default.temporaryDirectory.appendingPathComponent("sori-test-\(UUID().uuidString)") }
     override func tearDownWithError() throws { if FileManager.default.fileExists(atPath: root.path) { try FileManager.default.removeItem(at: root) } }

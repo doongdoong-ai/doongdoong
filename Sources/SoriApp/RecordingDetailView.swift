@@ -57,6 +57,9 @@ struct RecordingDetailView: View {
         VStack(spacing: 0) {
             header
             tools
+            if recording.work?.state == .interrupted {
+                RecoveryBanner(store: store, recording: recording).padding(.horizontal, 34).padding(.bottom, 12)
+            }
             if !recording.segments.isEmpty && (recording.status.isProcessing || store.queue.contains(recording.id) || store.isFinalizing(recording.id)) { progressBanner }
             if let message = recording.message { messageBanner(message) }
             if let ranges = recording.reviewRanges, !ranges.isEmpty { audioReviewBanner(ranges) }
@@ -419,6 +422,12 @@ struct RecordingDetailView: View {
             if recording.status.isProcessing || waiting || store.isFinalizing(recording.id) {
                 ProcessingProgressView(store: store, recordingID: recording.id)
                     .padding(.horizontal, 30)
+            } else if recording.work?.state == .interrupted {
+                Image(systemName: "waveform").font(.system(size: 36, weight: .ultraLight)).foregroundStyle(SoriTheme.secondary)
+                Text(recording.work?.kind == .recording ? "저장된 음성을 다시 들을 수 있어요" : "교정이 끝나면 전사문을 보여드립니다")
+                    .font(.system(size: 18, weight: .medium))
+                Text("녹음 파일은 보관되어 있습니다.")
+                    .font(.system(size: 14)).foregroundStyle(SoriTheme.secondary).multilineTextAlignment(.center)
             } else if recording.status == .noSpeech {
                 Text("감지된 음성이 없어요")
                     .font(.system(size: 20, weight: .medium)).multilineTextAlignment(.center)
@@ -449,15 +458,19 @@ struct RecordingDetailView: View {
     }
 
     private var recordingState: some View {
-        VStack(spacing: 24) {
+        let interrupted = recording.work?.state == .interrupted
+        return VStack(spacing: interrupted ? 16 : 24) {
             Spacer()
+            if !interrupted {
             Text(store.audio.isPausedRecording ? "녹음 일시 정지" : "녹음 중")
                 .font(.system(size: 22, weight: .medium))
-            Text(TimeText.clock(store.audio.recordingTime)).font(.system(size: 64, weight: .light)).monospacedDigit().tracking(-2)
+            }
+            Text(TimeText.clock(store.audio.recordingTime)).font(.system(size: interrupted ? 52 : 64, weight: .light)).monospacedDigit().tracking(-2)
                 .accessibilityLabel("녹음 시간 \(TimeText.clock(store.audio.recordingTime))")
-            WaveformView(samples: store.audio.liveLevels, live: true).frame(height: 90).padding(.horizontal, 55)
+            WaveformView(samples: store.audio.liveLevels, live: true).frame(height: interrupted ? 48 : 90).padding(.horizontal, 55)
             HStack(spacing: 18) {
-                Button { store.audio.pauseRecording() } label: { Label(store.audio.isPausedRecording ? "계속 녹음" : "일시 정지", systemImage: store.audio.isPausedRecording ? "mic.fill" : "pause.fill") }.buttonStyle(.bordered)
+                Button { store.toggleRecordingPause() } label: { Label(store.audio.isPausedRecording ? "계속 녹음" : "일시 정지", systemImage: store.audio.isPausedRecording ? "mic.fill" : "pause.fill") }.buttonStyle(.bordered)
+                    .disabled(store.isSleeping || store.isPreparingForSleep)
                 Button { Task { await store.stopRecording() } } label: { Label("녹음 마치기", systemImage: "stop.fill") }.buttonStyle(PrimaryButtonStyle())
             }
             Text(store.settings.transcriptionReady ? "녹음을 마치면 AI가 정리해 드려요." : "녹음을 마치면 음성 파일이 작업 폴더에 저장됩니다.")
@@ -650,7 +663,7 @@ struct NotesView: View {
             .onChange(of: store.unsavedIDs) { _, ids in
                 if !ids.contains(recording.id), recording.notes == draft { savedDraft = draft }
             }
-            .onReceive(NotificationCenter.default.publisher(for: Notification.Name("BungBungiWillTerminate"))) { _ in flush() }
+            .onReceive(NotificationCenter.default.publisher(for: Notification.Name("BungBungiWillSave"))) { _ in flush() }
             .onDisappear { flush() }
     }
 

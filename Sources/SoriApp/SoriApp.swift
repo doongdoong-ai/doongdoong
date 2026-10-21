@@ -42,6 +42,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             return
         }
         store.settings.refreshAIConnection()
+        let workspace = NSWorkspace.shared.notificationCenter
+        workspace.addObserver(self, selector: #selector(systemWillSleep), name: NSWorkspace.willSleepNotification, object: nil)
+        workspace.addObserver(self, selector: #selector(systemDidWake), name: NSWorkspace.didWakeNotification, object: nil)
+        Task { await store.recoverRecordings() }
         buildMenu()
         let minimum = args.contains("--minimum-window")
         let frame = NSRect(x: 0, y: 0, width: minimum ? 1000 : 1280, height: minimum ? 670 : 820)
@@ -89,12 +93,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                 self.store.recordings[index].status = args.contains("--polishing-preview") ? .polishing : .transcribing
                 if !args.contains("--transcript-preview") { self.store.recordings[index].segments = [] }
                 self.store.processingID = id
-                self.store.processingStartedAt = Date().addingTimeInterval(-83)
+                self.store.processingStartedAt = Date().addingTimeInterval(args.contains("--polishing-preview") ? -323 : -83)
                 self.store.updateProgress(.init(stage: args.contains("--polishing-preview") ? .correction : .transcription,
-                    detail: args.contains("--polishing-preview") ? "뜻과 숫자를 보존하며 오타와 띄어쓰기를 확인합니다." : "녹음 중 처리한 구간은 이어서 사용합니다.",
-                    completed: args.contains("--polishing-preview") ? 384 : 2460, total: args.contains("--polishing-preview") ? 960 : 4500,
-                    unit: args.contains("--polishing-preview") ? .sentences : .audio), for: id)
+                    detail: args.contains("--polishing-preview") ? "앞뒤 맥락을 확인하고 있어요. 교정이 끝나면 전사문을 보여드립니다." : "녹음 중 처리한 구간은 이어서 사용합니다.",
+                    completed: args.contains("--polishing-preview") ? nil : 2460, total: args.contains("--polishing-preview") ? nil : 4500,
+                    unit: args.contains("--polishing-preview") ? .sentences : .audio,
+                    estimatedDuration: args.contains("--polishing-preview") ? 300 : nil), for: id)
+                self.store.processingStepStartedUptime = ProcessInfo.processInfo.systemUptime - 240
                 if args.contains("--polishing-preview") { self.store.processingCompletedSteps = [.transcription] }
+            }
+            if args.contains("--interrupted-preview") || args.contains("--sleep-preview"),
+               let id = self.store.selectedID, let index = self.store.recordings.firstIndex(where: { $0.id == id }) {
+                let sleeping = args.contains("--sleep-preview")
+                self.store.recordings[index].segments = []
+                self.store.recordings[index].lectureHighlights = nil
+                self.store.recordings[index].work = .init(kind: sleeping ? .recording : .transcription,
+                    state: .interrupted, cause: sleeping ? .sleep : .unexpected, step: sleeping ? nil : .correction)
+                self.store.recordings[index].status = sleeping ? .recording : .queued
+                if sleeping {
+                    self.store.recordingID = id
+                    self.store.audio.isRecording = true
+                    self.store.audio.isPausedRecording = true
+                    self.store.audio.recordingTime = 2460
+                }
             }
             if args.contains("--review-preview"), let id = self.store.selectedID,
                let index = self.store.recordings.firstIndex(where: { $0.id == id }) {
@@ -191,7 +212,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         if store.audio.isRecording { Task { await store.stopRecording() } }
         else { store.requestRecording() }
     }
-    @objc private func pauseRecording() { store.audio.pauseRecording() }
+    @objc private func pauseRecording() { store.toggleRecordingPause() }
+    @objc private func systemWillSleep() { store.systemWillSleep() }
+    @objc private func systemDidWake() {
+        let resumed = store.systemDidWake()
+        Task { await resumed.value; await store.recoverRecordings() }
+    }
     @objc private func importAudio() { store.importAudio() }
     @objc private func reveal() { store.reveal() }
     @objc private func closeWindow() { NSApp.keyWindow?.performClose(nil) }
@@ -286,7 +312,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         }
         terminationRequested = true
         // Debounced notes must be flushed even when the app is otherwise idle.
-        NotificationCenter.default.post(name: Notification.Name("BungBungiWillTerminate"), object: nil)
+        NotificationCenter.default.post(name: Notification.Name("BungBungiWillSave"), object: nil)
         Task {
             let saved = await store.prepareForTermination()
             while store.isInstalling { try? await Task.sleep(for: .milliseconds(50)) }

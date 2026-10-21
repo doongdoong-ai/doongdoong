@@ -7,8 +7,8 @@ let package = Package(
     products: [.executable(name: "BungBungi", targets: ["SoriApp"]), .library(name: "SoriCore", targets: ["SoriCore"]),
                .executable(name: "DoongdoongTranscribe", targets: ["DoongdoongTranscribe"])],
     dependencies: [
-        .package(url: "https://github.com/doongdoong-ai/transcription-core.git", exact: "0.1.1"),
-        .package(url: "https://github.com/doongdoong-ai/codex-core.git", exact: "0.1.0")
+        .package(url: "https://github.com/doongdoong-ai/transcription-core.git", exact: "0.1.2"),
+        .package(url: "https://github.com/doongdoong-ai/codex-core.git", exact: "0.1.1")
     ],
     targets: [
         .target(name: "SoriCore", dependencies: [.product(name: "DoongdoongAI", package: "codex-core")]),

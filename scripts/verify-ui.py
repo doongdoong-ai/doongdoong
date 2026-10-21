@@ -31,6 +31,8 @@ SCENARIOS = (
     ("processing", ("--processing-preview",), True, (2560, 1640)),
     ("polishing", ("--polishing-preview",), True, (2560, 1640)),
     ("polishing-transcript", ("--polishing-preview", "--transcript-preview"), True, (2560, 1640)),
+    ("interrupted", ("--minimum-window", "--transcript-preview", "--interrupted-preview"), True, (2000, 1340)),
+    ("sleep", ("--minimum-window", "--sleep-preview"), True, (2000, 1340)),
     ("review", ("--minimum-window", "--transcript-preview", "--review-preview"), True, (2000, 1340)),
 )
 

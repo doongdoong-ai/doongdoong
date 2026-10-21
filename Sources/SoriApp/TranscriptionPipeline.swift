@@ -47,7 +47,7 @@ enum TranscriptionPipeline {
                            recognizer: any SpeechRecognizer = LocalTranscription.engine,
                            provider: (any TextGenerationProvider)? = nil,
                            onProgress: (@MainActor @Sendable (ProcessingProgress) -> Void)? = nil,
-                           onTranscribed: (([TranscriptSegment]) throws -> Void)? = nil) async throws -> TranscriptionResult {
+                           onReviewed: (([TranscriptSegment]) throws -> Void)? = nil) async throws -> TranscriptionResult {
         try Task.checkCancellation()
         let jobStarted = ProcessInfo.processInfo.systemUptime
         var timings: [String: Double] = [:]
@@ -69,30 +69,32 @@ enum TranscriptionPipeline {
         let reviewRanges: [AudioReviewRange] = []
         // The local core owns uncorrected words and native Whisper timestamps.
         // Text review must not change those times or the original text.
-        try onTranscribed?(original)
         var final = original
         var warnings: [String] = []
         if original.contains(where: { !$0.hasReliableTiming }) {
             warnings.append("일부 문장은 정확한 재생 위치를 확인하지 못해 대략적인 위치로 표시했습니다.")
         }
+        onProgress?(.init(stage: .correction, detail: "AI 연결을 확인하고 교정을 준비합니다."))
         guard settings.aiModel != nil || provider != nil else {
-            return .transcribed(segments: original, lecture: nil,
-                warning: "전사와 재생 위치를 저장했습니다. AI를 연결하면 교정·제목·핵심 요약을 정리할 수 있습니다.", reviewRanges: [])
+            throw SoriError.message("음성 처리는 저장했습니다. AI를 연결해 교정을 완료하면 전사문을 볼 수 있어요.")
         }
         let textProvider = try provider ?? settings.makeTextProvider()
         do {
             onProgress?(.init(stage: .correction, detail: "AI 연결을 확인하고 교정을 준비합니다."))
             let started = ProcessInfo.processInfo.systemUptime
             try await textProvider.checkConnection()
+            let estimatedDuration = CorrectionProgressEstimate.duration(characterCount: original.reduce(0) { $0 + $1.text.count })
             let review = try await LectureReview.review(original, cacheURL: directory.appendingPathComponent("final-review.json"),
                 identity: textProvider.identity, onProgress: { value in
                     onProgress?(.init(stage: value.phase == .context ? .context : .correction,
-                        detail: value.attempt > 1 ? "불확실한 수정안을 원문과 다시 대조하고 있어요." : "뜻과 숫자를 보존하며 오타와 띄어쓰기를 확인합니다.",
-                        completed: Double(value.completed), total: Double(value.total),
-                        unit: value.phase == .context ? .sections : .sentences))
+                        detail: value.attempt > 1 ? "불확실한 수정안을 원문과 다시 대조하고 있어요." : "앞뒤 맥락을 확인하고 있어요. 교정이 끝나면 전사문을 보여드립니다.",
+                        completed: value.completed == value.total ? Double(value.completed) : nil,
+                        total: value.completed == value.total ? Double(value.total) : nil,
+                        unit: value.phase == .context ? .sections : .sentences,
+                        estimatedDuration: value.completed == value.total ? nil : estimatedDuration))
                 }) { specification in
                     try await textProvider.generate(.init(instructions: specification.instructions, input: specification.input,
-                        schema: specification.schema, maximumResponseBytes: 160_000))
+                        schema: specification.schema, maximumResponseBytes: LectureReview.maximumResponseBytes))
                 }
             final = review.segments
             if review.preservedSegments > 0 { warnings.append("확인하기 어려운 일부 교정 제안은 적용하지 않고 원문을 유지했습니다.") }
@@ -100,10 +102,13 @@ enum TranscriptionPipeline {
             diagnostics(directory: directory, phase: "review", outcome: review.cached ? "cached" : "complete", identity: textProvider.identity)
         } catch {
             if error is CancellationError || Task.isCancelled { throw CancellationError() }
-            diagnostics(directory: directory, phase: "review", outcome: "original-preserved", error: error, identity: textProvider.identity)
-            warnings.append("전체 교정을 완료하지 못해 전사 원문을 보존했습니다.")
-            onProgress?(.init(stage: .correction, detail: "교정을 완료하지 못해 원문을 유지했습니다.", issue: true))
+            diagnostics(directory: directory, phase: "review", outcome: "pending", error: error, identity: textProvider.identity)
+            onProgress?(.init(stage: .correction, detail: "교정을 완료하지 못했습니다. 저장된 작업에서 다시 시도할 수 있어요.", issue: true))
+            throw SoriError.message("전사문 교정을 완료하지 못했어요. 음성과 처리한 내용은 보관했습니다. AI 연결과 이용 한도를 확인한 뒤 이어서 정리해 주세요.")
         }
+        try Task.checkCancellation()
+        // Raw ASR stays in private checkpoints. Publish only the whole validated revision.
+        try onReviewed?(final)
         do {
             let analysisStarted = ProcessInfo.processInfo.systemUptime
             let lecture = try await analyze(final, provider: textProvider, onProgress: onProgress)

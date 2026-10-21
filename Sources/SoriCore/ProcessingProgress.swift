@@ -1,7 +1,7 @@
 import Foundation
 
 public struct ProcessingProgress: Equatable, Sendable {
-    public enum Step: Int, CaseIterable, Sendable {
+    public enum Step: Int, CaseIterable, Codable, Sendable {
         case transcription, correction, summary, saving
         public var title: String {
             switch self {
@@ -42,9 +42,11 @@ public struct ProcessingProgress: Equatable, Sendable {
     public let total: Double?
     public let unit: Unit
     public let issue: Bool
+    public let estimatedDuration: TimeInterval?
     public init(stage: Stage, detail: String, completed: Double? = nil, total: Double? = nil,
-                unit: Unit = .sections, issue: Bool = false) {
+                unit: Unit = .sections, issue: Bool = false, estimatedDuration: TimeInterval? = nil) {
         self.stage = stage; self.detail = detail; self.completed = completed; self.total = total; self.unit = unit; self.issue = issue
+        self.estimatedDuration = estimatedDuration
     }
     public var fraction: Double? {
         guard let completed, let total, completed.isFinite, total.isFinite, total > 0 else { return nil }

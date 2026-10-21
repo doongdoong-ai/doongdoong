@@ -133,7 +133,7 @@ struct SidebarView: View {
                         Text(TimeText.clock(store.audio.recordingTime)).font(.system(size: 14)).monospacedDigit()
                     }
                     WaveformView(samples: store.audio.liveLevels, live: true).frame(height: 28)
-                    Button { store.audio.pauseRecording() } label: {
+                    Button { store.toggleRecordingPause() } label: {
                         Label(store.audio.isPausedRecording ? "녹음 이어가기" : "일시 정지", systemImage: store.audio.isPausedRecording ? "mic.fill" : "pause.fill")
                             .font(.system(size: 14))
                     }.buttonStyle(.plain)
@@ -418,6 +418,7 @@ struct RecordingRow: View {
             if recording.notes.localizedCaseInsensitiveContains(query) { return "메모 · " + snippet(recording.notes) }
         }
         if let progress = store.progress(for: recording.id) { return progress.detail }
+        if recording.work?.state == .interrupted { return recording.work?.title ?? "이어서 정리할 수 있어요" }
         if let first = recording.segments.first { return first.text }
         if recording.status == .recording { return "음성을 파일로 저장하고 있습니다" }
         if recording.status == .failed { return "녹음을 열어 다시 시도해 주세요" }
@@ -437,6 +438,7 @@ struct RecordingRow: View {
     }
     private var statusTitle: String {
         if let progress = store.progress(for: recording.id) { return progress.stage.step.title + " 중" }
+        if recording.work?.state == .interrupted { return recording.id == store.recordingID ? "녹음 일시 정지" : "이어서 정리 가능" }
         return switch recording.status {
         case .recording: "녹음 중"
         case .queued: store.queue.contains(recording.id) ? "AI 정리 대기" : "음성 저장됨"
