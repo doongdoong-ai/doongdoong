@@ -11,8 +11,9 @@ final class AppSettings {
     var language: String { didSet { defaults.set(language, forKey: "language") } }
     var codexPath: String { didSet { defaults.set(codexPath, forKey: "codexPath"); refreshAIConnection() } }
     var ffmpegPath: String { didSet { defaults.set(ffmpegPath, forKey: "ffmpegPath") } }
-    var alignmentPython: String { didSet { defaults.set(alignmentPython, forKey: "alignmentPython") } }
-    var alignmentModels: String { didSet { defaults.set(alignmentModels, forKey: "alignmentModels") } }
+    var whisperPath: String { didSet { defaults.set(whisperPath, forKey: "whisperPath") } }
+    var whisperModel: String { didSet { defaults.set(whisperModel, forKey: "whisperModel") } }
+    var vadModel: String { didSet { defaults.set(vadModel, forKey: "vadModel") } }
     var analysisEnabled: Bool { didSet { defaults.set(analysisEnabled, forKey: "analysisEnabled") } }
     var preferredModelID: String { didSet { defaults.set(preferredModelID, forKey: "codexPreferredModel"); selectFromCatalog() } }
     var reasoningEffort: ReasoningEffort { didSet { defaults.set(reasoningEffort.rawValue, forKey: "codexReasoningEffort"); selectFromCatalog() } }
@@ -113,9 +114,9 @@ final class AppSettings {
         language = defaults.string(forKey: "language") ?? "ko"
         codexPath = defaults.string(forKey: "codexPath") ?? Self.find("codex")
         ffmpegPath = defaults.string(forKey: "ffmpegPath") ?? Self.find("ffmpeg")
-        let alignment = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Doongdoong/Alignment")
-        alignmentPython = defaults.string(forKey: "alignmentPython") ?? alignment.appendingPathComponent("venv/bin/python").path
-        alignmentModels = defaults.string(forKey: "alignmentModels") ?? alignment.appendingPathComponent("models").path
+        whisperPath = defaults.string(forKey: "whisperPath") ?? Self.find("whisper-server")
+        whisperModel = defaults.string(forKey: "whisperModel") ?? Self.modelPath("ggml-large-v3-turbo.bin")
+        vadModel = defaults.string(forKey: "vadModel") ?? Self.modelPath("ggml-silero-v6.2.0.bin")
         analysisEnabled = defaults.object(forKey: "analysisEnabled") == nil || defaults.bool(forKey: "analysisEnabled")
         preferredModelID = defaults.string(forKey: "codexPreferredModel") ?? ""
         reasoningEffort = ReasoningEffort(rawValue: defaults.string(forKey: "codexReasoningEffort") ?? "") ?? .medium
@@ -128,23 +129,28 @@ final class AppSettings {
         return paths.map { "\($0)/\(name)" }.first { FileManager.default.isExecutableFile(atPath: $0) } ?? "/opt/homebrew/bin/\(name)"
     }
 
+    static func modelPath(_ name: String) -> String {
+        let support = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")
+        let paths = ["Doongdoong/Models", "Sori/Models"].map { support.appendingPathComponent($0).appendingPathComponent(name).path }
+        return paths.first { FileManager.default.isReadableFile(atPath: $0) } ?? paths[0]
+    }
+
     var transcriptionReady: Bool {
-        [codexPath, ffmpegPath, alignmentPython].allSatisfy {
-            FileManager.default.isExecutableFile(atPath: ($0 as NSString).expandingTildeInPath)
-        } && FileManager.default.isReadableFile(atPath: URL(fileURLWithPath: (alignmentModels as NSString).expandingTildeInPath).appendingPathComponent("hub/checkpoints/model.pt").path)
+        FileManager.default.isExecutableFile(atPath: (whisperPath as NSString).expandingTildeInPath)
+            && FileManager.default.isReadableFile(atPath: (whisperModel as NSString).expandingTildeInPath)
+            && FileManager.default.isReadableFile(atPath: (vadModel as NSString).expandingTildeInPath)
     }
     var transcriptionUnavailableReason: String {
-        "음성 처리 준비가 필요합니다. Codex 로그인과 설치 도구를 확인해 주세요. 녹음은 계속 저장됩니다."
+        "음성 인식 준비가 필요합니다. 설치 스크립트를 실행하거나 고급 설정에서 모델 위치를 확인해 주세요. 녹음은 계속 저장됩니다."
     }
     var codexReady: Bool { FileManager.default.isExecutableFile(atPath: codexPath) }
     var analysisReady: Bool { analysisEnabled && codexReady && selectedModel != nil }
     var snapshot: PipelineSettings {
         .init(codex: codexPath, ffmpeg: ffmpegPath, language: language, aiModel: analysisEnabled ? selectedModel : nil,
               reasoningEffort: reasoningEffort, requestTimeout: requestTimeout,
-              transcription: .init(codex: URL(fileURLWithPath: (codexPath as NSString).expandingTildeInPath),
-                                   ffmpeg: URL(fileURLWithPath: (ffmpegPath as NSString).expandingTildeInPath),
-                                   python: URL(fileURLWithPath: (alignmentPython as NSString).expandingTildeInPath),
-                                   alignmentModelDirectory: URL(fileURLWithPath: (alignmentModels as NSString).expandingTildeInPath), language: language))
+              transcription: .init(executable: URL(fileURLWithPath: (whisperPath as NSString).expandingTildeInPath),
+                                   model: URL(fileURLWithPath: (whisperModel as NSString).expandingTildeInPath),
+                                   vadModel: URL(fileURLWithPath: (vadModel as NSString).expandingTildeInPath), language: language))
     }
 }
 
@@ -155,11 +161,11 @@ struct PipelineSettings: Sendable {
     let aiModel: CodexModel?
     let reasoningEffort: ReasoningEffort
     let requestTimeout: Double
-    let transcription: TranscriptionConfiguration
+    let transcription: WhisperConfiguration
 
     init(codex: String, ffmpeg: String, language: String, aiModel: CodexModel? = nil,
          reasoningEffort: ReasoningEffort = .medium, requestTimeout: Double = 300,
-         transcription: TranscriptionConfiguration) {
+         transcription: WhisperConfiguration) {
         self.codex = codex; self.ffmpeg = ffmpeg; self.language = language
         self.aiModel = aiModel; self.transcription = transcription
         self.reasoningEffort = reasoningEffort; self.requestTimeout = requestTimeout

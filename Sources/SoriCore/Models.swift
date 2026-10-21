@@ -33,7 +33,6 @@ public struct TranscriptSegment: Codable, Identifiable, Equatable, Sendable {
     public var originalText: String
     // Missing in legacy recordings. Approximate positions never drive follow-along.
     public var timingQuality: String?
-    // Keep reading timestamps saved by earlier app versions; no legacy engine is loaded.
     public var hasReliableTiming: Bool { timingQuality == nil || timingQuality == "aligned" || timingQuality == "whisper" }
     public init(id: Int, start: Double, end: Double, text: String, originalText: String? = nil) {
         self.id = id; self.start = start; self.end = end; self.text = text
@@ -123,6 +122,34 @@ public enum Transcript {
         guard lower > 0 else { return nil }
         let segment = segments[lower - 1]
         return segment.hasReliableTiming && time < segment.end ? segment.id : nil
+    }
+
+    public static func parseWhisper(_ data: Data, duration: Double) throws -> [TranscriptSegment] {
+        guard duration.isFinite, duration > 0 else { throw SoriError.message("오디오 길이를 확인할 수 없습니다.") }
+        struct Output: Decodable {
+            struct Segment: Decodable {
+                struct Offsets: Decodable { let from: Double; let to: Double }
+                let offsets: Offsets
+                let text: String
+            }
+            let transcription: [Segment]
+        }
+        // whisper.cpp can emit an incomplete UTF-8 sequence in a segment (or a
+        // token in older full-JSON outputs). Replace only malformed sequences with
+        // U+FFFD; never guess missing speech, discard a segment, or relax JSON syntax.
+        let json = String(data: data, encoding: .utf8) == nil
+            ? Data(String(decoding: data, as: UTF8.self).utf8) : data
+        let decoded = try JSONDecoder().decode(Output.self, from: json)
+        var result: [TranscriptSegment] = []
+        for item in decoded.transcription {
+            let text = item.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty, !text.hasPrefix("[_"), item.offsets.from.isFinite, item.offsets.to.isFinite else { continue }
+            let start = max(result.last?.end ?? 0, max(0, item.offsets.from / 1000))
+            let end = min(duration, item.offsets.to / 1000)
+            guard end > start else { continue }
+            result.append(.init(id: result.count, start: start, end: end, text: text))
+        }
+        return result
     }
 
     public static func applyCorrections(_ data: Data, to segments: [TranscriptSegment]) throws -> [TranscriptSegment] {

@@ -45,8 +45,8 @@ final class AppStore {
     var showOriginal = false
     let root: URL
     private(set) var repository: LibraryRepository?
-    private var liveTranscription: RecordingTranscription?
-    private var finalizingTranscription: RecordingTranscription?
+    private var liveTranscription: LocalRecordingTranscription?
+    private var finalizingTranscription: LocalRecordingTranscription?
     private var pipelineTask: Task<Void, Never>?
     private var toastTask: Task<Void, Never>?
     private var importRunner: ProcessRunner?
@@ -63,7 +63,7 @@ final class AppStore {
     private let textProvider: (any TextGenerationProvider)?
 
     init(root explicitRoot: URL? = nil, settings: AppSettings? = nil,
-         recognizer: any SpeechRecognizer = CloudTranscription.engine, textProvider: (any TextGenerationProvider)? = nil) {
+         recognizer: any SpeechRecognizer = LocalTranscription.engine, textProvider: (any TextGenerationProvider)? = nil) {
         self.settings = settings ?? AppSettings()
         self.recognizer = recognizer; self.textProvider = textProvider
         let args = ProcessInfo.processInfo.arguments
@@ -228,7 +228,7 @@ final class AppStore {
             recordings.insert(recording, at: 0)
             do {
                 try repository.save(recording)
-                try CloudTranscription.prepareRecording(directory: repository.directory(for: recording))
+                try LocalTranscription.prepareRecording(directory: repository.directory(for: recording))
                 try audio.startRecording(to: repository.audioURL(for: recording))
             } catch {
                 update(recording.id) { $0.status = .failed; $0.message = error.localizedDescription }
@@ -237,8 +237,8 @@ final class AppStore {
             recordingID = recording.id
             if settings.transcriptionReady {
                 let snapshot = settings.snapshot
-                let live = RecordingTranscription(audio: try repository.audioURL(for: recording),
-                    directory: try repository.directory(for: recording), configuration: snapshot.transcription, recognizer: self.recognizer)
+                let live = LocalRecordingTranscription(audio: try repository.audioURL(for: recording),
+                    directory: try repository.directory(for: recording), configuration: snapshot.transcription)
                 let id = recording.id
                 live.onIssue = { [weak self] message in
                     guard let self, self.recordingID == id else { return }
@@ -404,7 +404,7 @@ final class AppStore {
                 }
                 var audio = try repository.audioURL(for: item)
                 if item.audioFileName == nil,
-                   let recovered = try await CloudTranscription.recoverInterrupted(audio: audio, directory: directory, language: snapshot.language) {
+                   let recovered = try await LocalTranscription.recoverInterrupted(audio: audio, directory: directory, language: snapshot.language) {
                     guard self.update(id, { $0.audioFileName = recovered.lastPathComponent }) else { throw SoriError.message("복구한 음성의 위치를 저장하지 못했습니다.") }
                     audio = recovered
                     if self.selectedID == id { try? self.audio.load(recovered) }
@@ -510,6 +510,7 @@ final class AppStore {
             await draining?.finish(cancel: true)
             await job?.value
             while self?.isFinalizingRecording == true { try? await Task.sleep(for: .milliseconds(20)) }
+            await LocalTranscription.engine.unload()
             guard let self, self.sleepGeneration == generation else { return }
             self.isPreparingForSleep = false
         }
@@ -542,8 +543,8 @@ final class AppStore {
         if !audio.isPausedRecording, liveTranscription == nil, settings.transcriptionReady,
            let item = recordings.first(where: { $0.id == id }), let repository {
             do {
-                let live = RecordingTranscription(audio: try repository.audioURL(for: item),
-                    directory: try repository.directory(for: item), configuration: settings.snapshot.transcription, recognizer: self.recognizer)
+                let live = LocalRecordingTranscription(audio: try repository.audioURL(for: item),
+                    directory: try repository.directory(for: item), configuration: settings.snapshot.transcription)
                 live.onIssue = { [weak self] message in self?.update(id) { $0.message = message } }
                 liveTranscription = live; live.start()
             } catch { errorMessage = error.localizedDescription }
@@ -576,8 +577,8 @@ final class AppStore {
                 var url = try repository.audioURL(for: item)
                 if item.audioFileName == nil {
                     // Also handles old recordings that crashed before the ASR marker existed.
-                    try CloudTranscription.prepareRecording(directory: directory)
-                    if let repaired = try await CloudTranscription.recoverInterrupted(audio: url, directory: directory, language: settings.language) { url = repaired }
+                    try LocalTranscription.prepareRecording(directory: directory)
+                    if let repaired = try await LocalTranscription.recoverInterrupted(audio: url, directory: directory, language: settings.language) { url = repaired }
                 }
                 let source = url
                 let info = try await Task.detached { try AudioEngine.inspect(source) }.value
@@ -621,7 +622,7 @@ final class AppStore {
         while isImporting || isFinalizingRecording || isAddingDemo { try? await Task.sleep(for: .milliseconds(50)) }
         let saved = retryUnsavedChanges()
         if !saved { isTerminating = false }
-        else { settings.cancelAIConnectionCheck() }
+        else { settings.cancelAIConnectionCheck(); await LocalTranscription.engine.unload() }
         return saved
     }
     func bookmark() {
@@ -714,7 +715,7 @@ final class AppStore {
             guard let project = projects.first else { return }
             let info = try await Task.detached { try AudioEngine.inspect(source) }.value
             guard !isTerminating, !isSleeping, !isPreparingForSleep else { return }
-            let originalSegments = try JSONDecoder().decode([TranscriptSegment].self, from: Data(contentsOf: transcript))
+            let originalSegments = try Transcript.parseWhisper(Data(contentsOf: transcript), duration: info.duration)
             var item = try repository.createRecording(project: project, title: "둥둥이, 처음 만나는 순간")
             try FileManager.default.copyItem(at: source, to: repository.audioURL(for: item))
             item.duration = info.duration; item.waveform = info.waveform; item.isDemo = true; item.status = .ready

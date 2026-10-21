@@ -7,9 +7,9 @@ import DoongdoongTranscription
 
 private actor RecoveryRecognizer: SpeechRecognizer {
     var calls = 0
-    func transcribe(wave: Data, configuration: TranscriptionConfiguration, workspace: URL) async throws -> [SpeechSegment] {
+    func transcribe(wave: Data, configuration: WhisperConfiguration) async throws -> [SpeechSegment] {
         calls += 1
-        return [.init(start: 0, end: 1, text: "첫 번째 녹음입니다.", timingQuality: "aligned")]
+        return [.init(start: 0, end: 1, text: "첫 번째 녹음입니다.")]
     }
 }
 
@@ -33,12 +33,9 @@ final class InterruptionTests: XCTestCase {
     @MainActor private func settings(_ root: URL) throws -> AppSettings {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: root.lastPathComponent))
         defaults.set("/usr/bin/true", forKey: "codexPath")
-        defaults.set("/usr/bin/true", forKey: "ffmpegPath")
-        defaults.set("/usr/bin/true", forKey: "alignmentPython")
-        defaults.set(root.path, forKey: "alignmentModels")
-        let model = root.appendingPathComponent("hub/checkpoints/model.pt")
-        try FileManager.default.createDirectory(at: model.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try Data([1]).write(to: model)
+        defaults.set("/usr/bin/true", forKey: "whisperPath")
+        defaults.set("/usr/bin/true", forKey: "whisperModel")
+        defaults.set("/usr/bin/true", forKey: "vadModel")
         return AppSettings(defaults: defaults, modelResolver: { _ in .sol })
     }
     private func wave(finalized: Bool) -> Data {
@@ -69,7 +66,7 @@ final class InterruptionTests: XCTestCase {
         XCTAssertEqual(store.selectedID, recording.id)
         await store.recoverRecordings()
         let restored = try XCTUnwrap(store.selected)
-        XCTAssertEqual(restored.audioFileName, "audio-recovered.wav")
+        XCTAssertEqual(restored.audioFileName, "audio-local-recovered.wav")
         XCTAssertEqual(restored.duration, 2, accuracy: 0.01)
         XCTAssertEqual(restored.notes, recording.notes)
         XCTAssertEqual(restored.work?.kind, .recording)

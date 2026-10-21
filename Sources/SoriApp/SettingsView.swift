@@ -50,7 +50,7 @@ struct SettingsView: View {
                 }
                 VStack(alignment: .leading, spacing: 5) {
                     Text("Codex").font(.system(size: 18, weight: .semibold)).foregroundStyle(SoriTheme.ink)
-                    Text("로그인 · 교정 · 제목 · 핵심 요약").font(.system(size: 13)).foregroundStyle(SoriTheme.secondary)
+                    Text("교정 · 제목 · 핵심 요약").font(.system(size: 13)).foregroundStyle(SoriTheme.secondary)
                 }
                 Spacer()
                 HStack(spacing: 6) {
@@ -63,7 +63,7 @@ struct SettingsView: View {
                 .overlay(RoundedRectangle(cornerRadius: 12).stroke(SoriTheme.ink.opacity(0.08), lineWidth: 1))
 
             Toggle("녹음 후 AI로 교정·요약", isOn: $settings.analysisEnabled).toggleStyle(.switch).controlSize(.small)
-            caption("음성 파일은 ChatGPT에서 전사하고, Mac에서 문장별 재생 위치를 맞춥니다. Codex가 전체 전사문을 교정한 뒤 결과를 보여드립니다.")
+            caption("전사는 Mac에서 처리하고, 전사문은 AI 교정이 끝난 뒤 표시합니다. Codex에는 텍스트를 보내며, CLI에 로그인한 ChatGPT 계정을 사용합니다.")
             if !settings.analysisEnabled { caption("꺼 두면 음성과 처리 기록을 보관합니다. 전사문을 보려면 AI 교정을 켜고 이어서 정리해 주세요.") }
 
             VStack(alignment: .leading, spacing: 11) {
@@ -167,7 +167,7 @@ struct SettingsView: View {
                 Text(settings.transcriptionReady ? "AI 정리" : "AI 준비")
                     .font(.system(size: 14, weight: .medium))
                 caption("녹음하는 동안 음성을 텍스트로 옮기고, 녹음이 끝나면 전체 내용을 정리합니다.")
-                caption("녹음 파일은 ChatGPT 받아쓰기 서버에 전송됩니다. 인터넷 연결과 Codex CLI의 ChatGPT 로그인이 필요합니다.")
+                caption("음성 인식은 Mac에서 처리합니다. 교정과 핵심 요약에는 전사된 텍스트만 AI로 전달합니다.")
                 if !settings.transcriptionReady { caption(settings.transcriptionUnavailableReason) }
             }
             HStack {
@@ -206,10 +206,11 @@ struct SettingsView: View {
             }
             DisclosureGroup("고급 설정", isExpanded: $advanced) {
                 VStack(alignment: .leading, spacing: 12) {
-                    pathRow("재생 위치 정렬 Python", value: $settings.alignmentPython)
-                    pathRow("재생 위치 정렬 모델", value: $settings.alignmentModels, directory: true)
+                    pathRow("Whisper 실행 파일", value: $settings.whisperPath)
+                    pathRow("음성 인식 모델", value: $settings.whisperModel)
+                    pathRow("음성 감지 모델", value: $settings.vadModel)
                     pathRow("FFmpeg", value: $settings.ffmpegPath)
-                    caption("FFmpeg는 가져온 파일과 전송 파일을 변환합니다. 정렬 모델은 음성과 전사문을 대조해 재생 위치만 찾습니다.")
+                    caption("FFmpeg는 가져온 파일을 녹음 형식으로 변환하는 데에 사용합니다.")
                     Divider().padding(.vertical, 4)
                     HStack(alignment: .top, spacing: 16) {
                         VStack(alignment: .leading, spacing: 8) {

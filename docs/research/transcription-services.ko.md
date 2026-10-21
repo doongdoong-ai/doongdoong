@@ -23,6 +23,6 @@
 
 ## 둥둥이의 비용·처리 경계
 
-현재 전사는 ChatGPT 내부 파일 받아쓰기 경로를 사용한다. 이 경로의 계정별 음성 제공량은 확인되지 않았다. Codex 교정과 요약은 기존 ChatGPT 계정의 Codex 사용량을 소비한다. 텍스트 처리는 OpenAI 서버에서 수행되므로 전체 로컬 AI나 무제한 무료라고 소개하지 않는다. [OpenAI 공식 요금·사용량](https://learn.chatgpt.com/docs/pricing)
+로컬 Whisper 전사는 외부 서비스의 월별 전사 시간 할당량을 사용하지 않는다. Mac의 연산 시간·메모리·디스크를 사용한다. Codex 교정과 요약은 기존 ChatGPT 계정의 Codex 사용량을 소비한다. 텍스트 처리는 OpenAI 서버에서 수행되므로 전체 로컬 AI나 무제한 무료라고 소개하지 않는다. [OpenAI 공식 요금·사용량](https://learn.chatgpt.com/docs/pricing)
 
 현재 구현은 Codex CLI만 연결한다. Claude 구독을 활용하겠다는 확장 취지와 현재 지원 기능은 구분하며, README에 Claude 지원을 약속하지 않는다.
