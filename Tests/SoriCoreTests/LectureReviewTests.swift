@@ -1,7 +1,32 @@
 import XCTest
+import DoongdoongAI
 @testable import SoriCore
 
 final class LectureReviewTests: XCTestCase {
+    func testProviderAndEffortHaveSeparateCachesAndRetriesDoNotAdvanceProgress() async throws {
+        let directory = try root(); defer { try? FileManager.default.removeItem(at: directory) }
+        let source = [segment(0, "이 문장을 보존합니다.")]
+        let cache = directory.appendingPathComponent("review.json")
+        let identities = [TextProviderIdentity(provider: "codex", model: "test", reasoningEffort: "medium"),
+                          .init(provider: "another-provider", model: "test", reasoningEffort: "medium"),
+                          .init(provider: "another-provider", model: "test", reasoningEffort: "high")]
+        for identity in identities {
+            var calls = 0
+            var counts: [Int] = []
+            let result = try await LectureReview.review(source, cacheURL: cache, identity: identity,
+                onProgress: { counts.append($0.completed) }) { _ in
+                    calls += 1
+                    return calls == 1 ? Data("{}".utf8) : self.noop
+                }
+            XCTAssertFalse(result.cached)
+            XCTAssertEqual(calls, 2)
+            XCTAssertEqual(counts, [0, 0, 1])
+        }
+        let cached = try await LectureReview.review(source, cacheURL: cache, identity: identities.last!) { _ in
+            XCTFail("The same provider identity should reuse validated work"); return self.noop
+        }
+        XCTAssertTrue(cached.cached)
+    }
     private func segment(_ id: Int, _ text: String) -> TranscriptSegment {
         .init(id: id, start: Double(id * 10), end: Double(id * 10 + 8), text: text)
     }
@@ -113,17 +138,17 @@ final class LectureReviewTests: XCTestCase {
         let source = (0..<50).map { segment($0, "보존할 강의 문장 \($0)") }
         let cache = directory.appendingPathComponent("review.json")
         var calls = 0
-        for model in [CodexModel.sol, .luna] {
-            let result = try await LectureReview.review(source, cacheURL: cache, selection: model) { _ in
+        for model in ["gpt-6.1-sol", "gpt-6-luna"] {
+            let result = try await LectureReview.review(source, cacheURL: cache, identity: .init(provider: "codex", model: model, reasoningEffort: "medium")) { _ in
                 calls += 1; return self.noop
             }
             XCTAssertFalse(result.cached)
             let receipt = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: cache)) as? [String: Any])
-            XCTAssertEqual(receipt["model"] as? String, model.rawValue)
+            XCTAssertEqual(receipt["model"] as? String, model)
             XCTAssertEqual(receipt["effort"] as? String, "medium")
         }
         XCTAssertEqual(calls, 4)
-        let cached = try await LectureReview.review(source, cacheURL: cache, selection: .luna) { _ in
+        let cached = try await LectureReview.review(source, cacheURL: cache, identity: .init(provider: "codex", model: "gpt-6-luna", reasoningEffort: "medium")) { _ in
             XCTFail("Same model must reuse its cache"); return self.noop
         }
         XCTAssertTrue(cached.cached)

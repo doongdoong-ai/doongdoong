@@ -25,7 +25,11 @@ final class AppStore {
     var processingID: UUID?
     var queue: [UUID] = []
     private var lectureOnlyIDs: Set<UUID> = []
-    var progressDetail = ""
+    var processingProgress: ProcessingProgress?
+    var processingStartedAt: Date?
+    var processingIssues: Set<ProcessingProgress.Step> = []
+    var processingCompletedSteps: Set<ProcessingProgress.Step> = []
+    var processingSummaryOnly = false
     var isImporting = false
     var isInstalling = false
     var isStartingRecording = false
@@ -91,6 +95,21 @@ final class AppStore {
     var currentProjectName: String { projects.first { $0.id == selected?.projectID }?.name ?? "라이브러리" }
     var totalDuration: Double { recordings.reduce(0) { $0 + $1.duration } }
     var busy: Bool { audio.isRecording || processingID != nil || isImporting || isStartingRecording || isFinalizingRecording || isInstalling || isAddingDemo }
+    func isFinalizing(_ id: UUID) -> Bool { finalizingID == id }
+    func progress(for id: UUID) -> ProcessingProgress? {
+        if let processingID { return processingID == id ? processingProgress : nil }
+        return finalizingID == id ? processingProgress : nil
+    }
+    func updateProgress(_ value: ProcessingProgress, for id: UUID) {
+        guard processingID.map({ $0 == id }) ?? (finalizingID == id) else { return }
+        if processingStartedAt == nil { processingStartedAt = Date() }
+        if let previous = processingProgress, previous.stage.step != value.stage.step,
+           !processingIssues.contains(previous.stage.step) {
+            processingCompletedSteps.insert(previous.stage.step)
+        }
+        if value.issue { processingIssues.insert(value.stage.step); processingCompletedSteps.remove(value.stage.step) }
+        processingProgress = value
+    }
 
     func canModify(_ id: UUID) -> Bool {
         !isTerminating && recordings.contains(where: { $0.id == id }) && id != recordingID && id != finalizingID && id != processingID && !importingIDs.contains(id) && !queue.contains(id)
@@ -208,7 +227,16 @@ final class AppStore {
     @discardableResult func stopRecording(enqueueForTranscription: Bool = true) async -> Bool {
         guard !isFinalizingRecording, let id = recordingID, let recording = recordings.first(where: { $0.id == id }), let repository else { return true }
         isFinalizingRecording = true; finalizingID = id
-        defer { isFinalizingRecording = false; finalizingID = nil }
+        // The live ASR request can still be finishing when the microphone stops.
+        // Show that drain explicitly rather than briefly returning to an empty view.
+        if processingID == nil {
+            processingProgress = nil; processingStartedAt = Date(); processingIssues = []; processingCompletedSteps = []; processingSummaryOnly = false
+            updateProgress(.init(stage: .finishingRecording, detail: "녹음을 저장하고 처리 중인 음성 구간을 마무리합니다."), for: id)
+        }
+        defer {
+            isFinalizingRecording = false; finalizingID = nil
+            if processingID == nil { processingProgress = nil; processingStartedAt = nil }
+        }
         let duration = audio.finishRecording(); recordingID = nil
         let live = liveTranscription; liveTranscription = nil
         let saved = update(id) { $0.duration = duration; $0.status = .queued }
@@ -310,19 +338,27 @@ final class AppStore {
     private func runNext() {
         guard !isTerminating, processingID == nil, !queue.isEmpty else { return }
         let id = queue.removeFirst(); processingID = id
+        processingProgress = nil; processingStartedAt = Date(); processingIssues = []; processingCompletedSteps = []
+        updateProgress(.init(stage: .preparing, detail: "녹음 길이와 저장된 전사 구간을 확인합니다."), for: id)
         let lectureOnly = lectureOnlyIDs.remove(id) != nil
+        processingSummaryOnly = lectureOnly
         let snapshot = settings.snapshot
         pipelineTask = Task { [weak self] in
             guard let self else { return }
-            defer { self.processingID = nil; self.pipelineTask = nil; self.progressDetail = ""; self.runNext() }
+            defer {
+                self.processingID = nil; self.pipelineTask = nil; self.processingProgress = nil
+                self.processingStartedAt = nil; self.runNext()
+            }
             do {
                 guard let item = self.recordings.first(where: { $0.id == id }), let repository = self.repository else { return }
                 let directory = try repository.directory(for: item)
                 if lectureOnly {
                     guard self.update(id, { $0.status = .polishing }) else { return }
-                    self.progressDetail = "AI가 녹음을 정리하고 있어요"
-                    let lecture = try await TranscriptionPipeline.organize(segments: item.segments, directory: directory, settings: snapshot)
+                    self.processingCompletedSteps = []
+                    let lecture = try await TranscriptionPipeline.organize(segments: item.segments, directory: directory, settings: snapshot,
+                        onProgress: { [weak self] value in self?.updateProgress(value, for: id) })
                     try Task.checkCancellation()
+                    self.updateProgress(.init(stage: .saving, detail: "제목과 핵심 요약을 보관함에 저장합니다."), for: id)
                     guard self.update(id, { self.apply(lecture, to: &$0); $0.status = $0.completedStatus; $0.message = nil }) else { return }
                     self.notify("핵심 요약을 정리했습니다")
                     return
@@ -341,9 +377,9 @@ final class AppStore {
                     self.update(id) { $0.status = $0.segments.isEmpty ? .queued : $0.completedStatus; $0.message = "저장 공간을 확인한 뒤 다시 시도해 주세요. 녹음은 보관되어 있습니다." }
                     return
                 }
-                self.progressDetail = "AI가 녹음을 정리하고 있어요"
                 let result = try await TranscriptionPipeline.transcribe(
                     audio: audio, directory: directory, duration: info.duration, settings: snapshot,
+                    onProgress: { [weak self] value in self?.updateProgress(value, for: id) },
                     onTranscribed: { segments in
                         // Keep any previous user edits until a complete replacement is ready.
                         guard self.update(id, {
@@ -354,6 +390,7 @@ final class AppStore {
                         }
                     })
                 try Task.checkCancellation()
+                self.updateProgress(.init(stage: .saving, detail: "전사문과 재생 위치를 보관함에 저장합니다."), for: id)
                 switch result {
                 case .noSpeech:
                     guard let previous = self.recordings.first(where: { $0.id == id }) else { return }

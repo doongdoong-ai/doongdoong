@@ -7,9 +7,10 @@ public enum LocalTranscription {
     public static let engine = WhisperEngine()
 
     public static func transcribe(audio: URL, directory: URL, configuration: WhisperConfiguration,
-                                  recognizer: any SpeechRecognizer = engine) async throws -> [TranscriptSegment] {
+                                  recognizer: any SpeechRecognizer = engine,
+                                  onProgress: (@Sendable (TranscriptionProgress) async -> Void)? = nil) async throws -> [TranscriptSegment] {
         let session = TranscriptionSession(audio: audio, directory: directory, configuration: configuration, recognizer: recognizer)
-        let speech = try await session.processAvailable(final: true)
+        let speech = try await session.processAvailable(final: true, onProgress: onProgress)
         let segments = speech.enumerated().map { index, value in
             var segment = TranscriptSegment(id: index, start: value.start, end: value.end, text: value.text)
             segment.timingQuality = "whisper"

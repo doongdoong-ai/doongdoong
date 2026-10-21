@@ -2,6 +2,7 @@ import Foundation
 import AVFoundation
 import CryptoKit
 import SoriCore
+import DoongdoongCodex
 
 /// Reads only the immutable PCM prefix of a WAV still owned by AVAudioRecorder.
 /// The recorder's unfinished RIFF/data lengths are not used as a clock.

@@ -1,5 +1,6 @@
 import Foundation
 import SoriCore
+import DoongdoongCodex
 
 /// The selected model receives one capability bound to one recording, never credentials or arbitrary paths.
 @MainActor

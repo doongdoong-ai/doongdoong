@@ -417,6 +417,7 @@ struct RecordingRow: View {
             if let match = recording.segments.first(where: { $0.text.localizedCaseInsensitiveContains(query) }) { return snippet(match.text) }
             if recording.notes.localizedCaseInsensitiveContains(query) { return "메모 · " + snippet(recording.notes) }
         }
+        if let progress = store.progress(for: recording.id) { return progress.detail }
         if let first = recording.segments.first { return first.text }
         if recording.status == .recording { return "음성을 파일로 저장하고 있습니다" }
         if recording.status == .failed { return "녹음을 열어 다시 시도해 주세요" }
@@ -435,7 +436,8 @@ struct RecordingRow: View {
         return Text(String(value[..<match.lowerBound])) + Text(String(value[match])).bold().foregroundColor(SoriTheme.ink) + Text(String(value[match.upperBound...]))
     }
     private var statusTitle: String {
-        switch recording.status {
+        if let progress = store.progress(for: recording.id) { return progress.stage.step.title + " 중" }
+        return switch recording.status {
         case .recording: "녹음 중"
         case .queued: store.queue.contains(recording.id) ? "AI 정리 대기" : "음성 저장됨"
         case .transcribing, .polishing: "AI 정리 중"
