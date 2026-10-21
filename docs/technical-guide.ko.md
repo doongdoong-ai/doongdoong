@@ -13,25 +13,27 @@
 | 강조 분석 | 전사문 → 제목·근거가 있는 요약 카드 | 앱 `TranscriptionPipeline` |
 | 녹음·라이브러리·재생 | 사용자 조작 → 파일·UI | `SoriApp` |
 
-앱의 `SoriSpeech/LocalTranscription.swift`는 코어 출력을 기존 `TranscriptSegment`로 바꾸는 어댑터입니다. 코어는 SoriCore, SwiftUI, Codex, 로그인 정보에 의존하지 않습니다. 원문과 타임스탬프는 코어가 결정하고, 보정은 문장 ID·원문·시간을 바꿀 수 없습니다.
+앱의 `SoriSpeech/CloudTranscription.swift`는 코어 출력을 기존 `TranscriptSegment`로 바꾸는 어댑터입니다. 코어는 SoriCore·SwiftUI·텍스트 교정 모듈과 독립적입니다. Codex CLI의 로그인, FFmpeg와 Python 정렬 런타임은 실행 의존성입니다. 원문과 타임스탬프는 코어가 결정하고, 보정은 문장 ID·원문·시간을 바꿀 수 없습니다.
 
-## 메모리에 유지한 모델로 증분 처리
+## 5분 파일 전사와 문장 시간 정렬
 
-AVAudioRecorder가 16 kHz·mono·PCM16 WAV를 저장합니다. 앱이 2초마다 새 구간을 확인하며, 최대 60초 구간의 끝부분 5초에서 260 ms 이상의 쉼을 우선 경계로 사용합니다. 이미 처리한 음성을 겹쳐 반복 디코딩하지 않습니다.
+AVAudioRecorder가 16 kHz·mono·PCM16 WAV를 저장합니다. 앱은 2초마다 새 구간을 확인하며, 최대 300초 구간의 마지막 5초에서 260 ms 이상의 쉼을 우선 경계로 삼습니다. 처리한 음성을 겹쳐 전사하지 않으며 마지막 짧은 구간도 보냅니다. 파일을 재생 속도로 스트리밍하지 않습니다.
 
-`WhisperEngine` 하나를 녹음과 파일 가져오기 세션이 공유합니다. 첫 요청에서 whisper-server와 large-v3-turbo FP16 모델을 로딩하고 다음 요청부터 재사용합니다. actor의 reentrancy와 별도로 FIFO gate를 두어 추론과 모델 변경을 직렬화합니다. 앱 종료 시 엔진을 해제합니다.
+FFmpeg가 구간을 16 kHz·mono·32 kbps AAC로 변환하고 `POST https://chatgpt.com/backend-api/transcribe`로 전송합니다. 모델 선택 인자는 없습니다. 음성을 받아쓰는 서버 모델과 후속 교정 모델은 별개입니다.
 
-서버는 127.0.0.1의 임시 포트·무작위 경로에서만 동작합니다. WAV multipart 요청의 verbose_json 응답에서 세그먼트 시각을 얻고 구간 오프셋을 더합니다. 리다이렉트를 거부하고 자식 프로세스에 인증정보를 전달하지 않습니다. localhost HTTP는 IPC이며 외부 음성 업로드가 아닙니다.
+`DictationAccountClient`는 설치된 Codex CLI의 `app-server --stdio`를 실행해 `account/read`와 `getAuthStatus`로 ChatGPT 로그인·토큰을 확인합니다. 음성 전사를 위한 `thread/start`나 `turn/start`는 호출하지 않습니다. API 키 로그인을 거부하고, 401 응답에만 토큰 갱신 후 한 번 재시도합니다. 토큰은 메모리에서만 사용하고 RPC 원문·인증 파일을 기록하지 않습니다. HTTP 목적지는 고정하고 리다이렉트도 거부합니다.
 
-Silero VAD를 사용하고 디지털 무음은 디코더에 보내지 않습니다. 작은 발화를 놓치거나 Whisper가 반복·환각을 만들 가능성은 남습니다. native timestamp는 단어 단위 강제 정렬이 아니며 정확성을 보증하지 않습니다. 새 결과의 timingQuality는 whisper이고 이전 aligned/approximate 기록도 읽습니다.
+서버는 텍스트만 돌려주므로 Mac에서 MMS_FA의 문자 확률과 CTC 강제 정렬로 문장별 시간을 찾습니다. 정렬 모델은 문장을 생성하지 않습니다. 원문·문장 순서·시간 범위를 검증하고, 확신이 낮은 문장은 `approximate`로 표시해 따라읽기에서 제외합니다. 정렬을 실패한 문장에 임의로 균등한 시간을 배분하지 않습니다. 8 GB Mac에서 모델을 동시에 여러 개 로드하지 않도록 공유 recognizer의 구간 처리를 직렬화합니다.
 
-정상 녹음 종료는 진행 중인 추론을 취소하지 않습니다. 해당 구간을 마친 뒤 완료한 결과를 재사용하여 마지막 잔여 구간을 처리합니다. 앱 종료·사용자 취소 시 실행 중 엔진을 종료하되 완료된 체크포인트는 유지합니다.
+디지털 무음은 서버에 보내지 않습니다. 조용한 실제 발화를 버리지 않으므로 잡음·누락·환각 가능성은 남습니다. 빈 응답이나 잘못된 응답은 완료로 기록하지 않습니다. 정확한 전체 발언 보존은 별도 청취 평가가 필요합니다.
+
+정상 녹음 종료는 진행 중인 구간을 마친 뒤 체크포인트를 재사용하고 잔여 구간만 처리합니다. 녹음 중 파일 전송을 실패해도 녹음 자체는 계속 저장합니다.
 
 ## 실패·재개·분석
 
-구간 완료 전에는 커서를 전진시키지 않습니다. PCM SHA-256·언어·분할 설정·엔진/모델 파일 식별 정보를 확인한 결과만 재사용합니다. 모델은 경로·크기·수정 시각·inode로 식별하므로 실행 중 덮어쓰지 않아야 합니다. 같은 작업 폴더의 중복 처리는 파일 잠금으로 막습니다.
+구간 완료 전에는 커서를 전진시키지 않습니다. PCM SHA-256·언어·분할 설정·실행 도구/정렬 모델 식별 정보를 확인한 결과만 재사용합니다. 모델은 경로·크기·수정 시각·inode로 식별하므로 실행 중 덮어쓰지 않아야 합니다. 같은 작업 폴더의 중복 처리는 파일 잠금으로 막습니다.
 
-전사 오류는 녹음을 중단하지 않고 30초 뒤 재시도합니다. 미완성 WAV 헤더는 별도 audio-local-recovered.wav로 복구하며 원본은 덮어쓰지 않습니다. 이전 앱의 live-asr 녹음 복구도 유지합니다.
+전사 오류는 녹음을 중단하지 않고 30초 뒤 재시도합니다. 서버 응답은 정렬 전에 원자적으로 저장하므로 정렬 실패 후 같은 음성을 재전송하지 않습니다. 미완성 WAV 헤더는 별도 `audio-recovered.wav`로 복구하며 원본은 덮어쓰지 않습니다. 이전 로컬 전사 버전의 녹음 표식·복구 파일·공개된 전사문은 계속 읽습니다. 이전 엔진의 인식 캐시는 새 엔진의 결과로 재사용하지 않습니다.
 
 전사 원문은 내부 체크포인트에 먼저 저장하고 **전체 교정이 검증된 뒤에만 `recording.json.segments`로 공개**합니다. AI 연결이 없거나 교정이 실패하면 전사문을 공개하지 않고 재개 상태로 남깁니다. 교정이 완료되면 요약 중에도 읽기·복사·재생이 가능합니다. 요약 실패는 이미 검증된 전사문을 숨기지 않습니다. 재처리 중에는 기존 공개본과 사용자 편집을 유지합니다.
 
@@ -47,9 +49,9 @@ Silero VAD를 사용하고 디지털 무음은 디코더에 보내지 않습니�
 
 ## 잠자기와 갑작스러운 종료
 
-녹음기를 열기 전에 복구 표식을 남기므로 첫 전사 요청 전에 앱이 종료돼도 복구할 수 있습니다. 저장된 PCM의 완전한 샘플만 별도 WAV로 복구하고, 원본은 보존합니다. WAV 뒤의 메타데이터는 음성으로 읽지 않습니다. 코어의 감독 프로세스는 소유 앱 파이프의 EOF를 감지하여 상주 Whisper를 정리합니다.
+녹음기를 열기 전에 복구 표식을 남기므로 첫 전사 요청 전에 앱이 종료돼도 복구할 수 있습니다. 저장된 PCM의 완전한 샘플만 별도 WAV로 복구하고, 원본은 보존합니다. WAV 뒤의 메타데이터는 음성으로 읽지 않습니다. 상주 음성 인식 서버는 없습니다. 정상 취소와 잠자기에서는 진행 중 HTTP 요청과 정렬 프로세스를 취소합니다. 정렬 helper는 부모 프로세스의 종료를 감지해 모델 작업을 중단합니다. 외부 서버가 이미 처리한 요청까지 되돌릴 수는 없습니다.
 
-앱은 NSWorkspace 전용 알림 센터의 `willSleepNotification`에서 녹음·재생을 동기적으로 일시 정지하고 메모와 작업 의도를 저장합니다. 실행 중 추론 취소·엔진 해제는 비동기로 처리합니다. Apple 문서는 [잠자기 전 알림](https://developer.apple.com/documentation/appkit/nsworkspace/willsleepnotification)과 [깨우기 알림](https://developer.apple.com/documentation/appkit/nsworkspace/didwakenotification)을 이 알림 센터에서 받도록 명시합니다.
+앱은 NSWorkspace 전용 알림 센터의 `willSleepNotification`에서 녹음·재생을 동기적으로 일시 정지하고 메모와 작업 의도를 저장합니다. 실행 중 요청·정렬 프로세스 취소는 비동기로 처리합니다. Apple 문서는 [잠자기 전 알림](https://developer.apple.com/documentation/appkit/nsworkspace/willsleepnotification)과 [깨우기 알림](https://developer.apple.com/documentation/appkit/nsworkspace/didwakenotification)을 이 알림 센터에서 받도록 명시합니다.
 
 깨우면 잠자기 때문에 중단한 활성 작업과 대기열을 같은 순서로 재개합니다. 마이크는 자동으로 켜지지 않으며 사용자가 **계속 녹음**을 누릅니다. 반복된 잠자기 알림과 오래된 깨우기 작업은 세대 식별자로 구분합니다. 사용자가 취소한 작업은 자동 재개하지 않습니다. 강제 종료 후 재실행에서는 파일만 복구하고 **이어서 정리**를 기다립니다. 요약만 재시도하던 작업은 그 의도를 보존하여 전사나 사용자 편집을 덮어쓰지 않습니다.
 
@@ -69,28 +71,30 @@ Silero VAD를 사용하고 디지털 무음은 디코더에 보내지 않습니�
 
 진행 화면은 녹음 마무리, 음성 전사, 전체 맥락 확인, 문장 교정, 요약, 긴 강의의 요약 통합, 저장을 구분합니다. 사용자에게는 전사·교정·제목과 핵심 요약·저장 네 단계로 묶어 보여 줍니다.
 
-전사는 체크포인트 검증 후 실제 완료한 음성 길이를 표시합니다. 교정은 **예상 진행률**로 명시한 시간 기반 막대를 사용합니다. 초기 예상 시간은 `max(120초, 60초 + 원문 글자 수 × 0.012초)`이며 최대 3,600초입니다. 이는 실측 모델 성능이 아닌 보수적인 UI 초기값입니다. 단조 시계의 경과 시간 `t`, 예상 시간 `d`에 대해 `0.9 × (1 − exp(−1.8t/d))`로 올립니다. 예상 시간에 약 75%이고 오래 기다려도 90%를 넘지 않습니다. 분할·재시도는 단계 시계를 초기화하지 않습니다. 실제 전체 검증이 끝나야 100%로 바뀝니다. 요약은 불확정 막대를 유지합니다.
+전사는 받아쓰기와 재생 위치 정렬을 구분해서 안내하고, 두 단계가 끝나 체크포인트가 저장된 음성 길이만 진행률에 반영합니다. 교정은 **예상 진행률**로 명시한 시간 기반 막대를 사용합니다. 초기 예상 시간은 `max(120초, 60초 + 원문 글자 수 × 0.012초)`이며 최대 3,600초입니다. 이는 실측 모델 성능이 아닌 보수적인 UI 초기값입니다. 단조 시계의 경과 시간 `t`, 예상 시간 `d`에 대해 `0.9 × (1 − exp(−1.8t/d))`로 올립니다. 예상 시간에 약 75%이고 오래 기다려도 90%를 넘지 않습니다. 분할·재시도는 단계 시계를 초기화하지 않습니다. 실제 전체 검증이 끝나야 100%로 바뀝니다. 요약은 불확정 막대를 유지합니다.
 
 교정이 끝난 전사문이 있으면 위쪽의 작은 진행 패널에서 상태를 확인하며 읽기·재생을 계속할 수 있습니다. 대기 중인 녹음은 앞선 작업 수를 보여 주고, 실패한 단계는 재시도 필요로 표시합니다. 요약만 재시도할 때는 요약·저장만 표시합니다.
 
-Whisper 전사는 모델 설치 이후 계정·인터넷·API 비용이 필요 없습니다. Codex는 텍스트 교정·제목·핵심 요약에만 사용하며 계정 한도가 적용됩니다. 이전 내부 받아쓰기·MMS 구현은 과거 비교·복구용으로 남아 있지만 현재 제품 전사 경로에서는 호출하지 않습니다.
+음성 파일과 텍스트는 OpenAI 서버로 전송됩니다. 녹음·저장·재생과 문장 시간 정렬은 Mac에서 수행합니다. Codex CLI는 전사에서 로그인만 제공하고 교정·요약에서는 텍스트 모델을 실행합니다.
 
-## 준비와 빌드
+내부 받아쓰기는 공개 `/v1/audio/transcriptions` API가 아닙니다. 앱은 API 키 결제·크레딧 구매·다른 엔드포인트로의 유료 폴백을 구현하지 않습니다. 그러나 내부 경로의 모델·계정별 사용량 차감·과금 규칙이 공식적으로 확인된 것은 아니므로 “100% 무료”나 “Codex 할당량만 차감”이라고 단정하지 않습니다. 실패하면 원본과 저장한 진행 상태를 남깁니다.
 
-macOS 14+, Swift 6, Homebrew가 필요합니다. whisper.cpp 1.9.5에서 검증했습니다.
+## 설치와 개발
+
+macOS 14+, Swift 6, Codex CLI의 ChatGPT 로그인, FFmpeg, Python 3.13이 필요합니다.
 
 ```sh
-brew install whisper.cpp ffmpeg
+brew install python@3.13 ffmpeg
 ./scripts/setup-engine.sh
-swift test
 ./scripts/build-app.sh
+swift test
 ```
 
-설치 스크립트는 SPM 의존성을 받은 뒤 전사 코어의 모델 설치 스크립트에 위임합니다. 기본 위치는 ~/Library/Application Support/Doongdoong/Models이며 기존 Sori/Models의 Turbo 모델도 재사용합니다. SHA-256을 검증하고 MMS·Python은 설치하지 않습니다. 기존 모델은 자동 삭제하지 않습니다.
+설치 스크립트는 전사 코어가 소유합니다. Python 의존성을 독립 가상환경에 고정 버전으로 설치하고 MMS_FA 모델을 SHA-256으로 검증합니다. 이 모델은 CC BY-NC 4.0이며 앱의 MIT 라이선스로 재허가되지 않습니다. [외부 구성요소](third-party-notices.md)를 참고하세요.
 
-독립 CLI는 코어의 doongdoong-transcribe, 앱 저장소의 호환 명령은 DoongdoongTranscribe입니다. 인자는 AUDIO OUTPUT_DIRECTORY WHISPER_SERVER MODEL VAD [LANGUAGE]이며 교정이나 로그인은 실행하지 않습니다.
+독립 CLI는 코어의 `doongdoong-transcribe`, 앱의 호환 명령은 `DoongdoongTranscribe`입니다. 인자는 `AUDIO.wav OUTPUT_DIRECTORY CODEX FFMPEG PYTHON ALIGNMENT_MODELS [LANGUAGE]`이며 전사·시간 정렬까지만 실행합니다.
 
---library는 격리된 라이브러리, --demo --snapshot은 창 없는 렌더링입니다. --integration-report는 창·마이크 없이 전사부터 Codex 분석까지 검사하므로 로그인과 계정 한도가 필요합니다.
+`--library`는 격리된 라이브러리, `--demo --snapshot`은 창 없는 렌더링입니다. `--integration-report`는 창·마이크 없이 실제 전사부터 교정·요약까지 검사합니다.
 
 ## 데이터 보관
 
@@ -100,16 +104,16 @@ swift test
 녹음 폴더/
 ├── audio.wav                    # 원본 PCM
 ├── recording.json               # 공개된 교정문·메모·파형·요약·중단된 작업 의도
-├── local-transcription/         # 구간별 원문·시각·PCM 해시·재개 기록
-├── local-asr-original.json       # 합친 원문과 타임스탬프
-├── audio-local-recovered.wav    # 중단된 녹음 복구 시에만 생성
+├── transcription/              # 구간별 응답·정렬·PCM 해시·재개 기록
+├── asr-original.json       # 합친 원문과 타임스탬프
+├── audio-recovered.wav    # 중단된 녹음 복구 시에만 생성
 ├── final-review.json            # 검증된 교정 결과
 ├── final-review.json.parts/     # 내부 분할 결정과 완료한 교정 부분
 ├── processing-times.json        # 단계별 시간
 └── transcript-history/          # 재처리 전 기존 기록
 ```
 
-[중단·교정 공개 검증](validation-interruption-recovery.ko.md) · [로컬 전사 도입 검증](validation-local-transcription.ko.md) · [이전 파일 전사 검증](validation-codex-file-transcription.ko.md) · [외부 구성요소](third-party-notices.md)
+[중단·교정 공개 검증](validation-interruption-recovery.ko.md) · [이번 전환 검증](validation-chatgpt-transition.ko.md) · [Whisper 복원 지침](restore-whisper.ko.md) · [외부 구성요소](third-party-notices.md)
 
 외부 배포용 서명·공증, 화자 분리, 시스템 오디오 녹음, 단어 단위 정렬은 현재 지원하지 않습니다.
 
