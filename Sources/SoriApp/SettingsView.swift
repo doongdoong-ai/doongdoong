@@ -38,6 +38,7 @@ struct SettingsView: View {
             }
         }.font(.system(size: 14)).padding(30).frame(width: 600, height: viewportHeight).background(SoriTheme.paper)
             .onChange(of: store.settings.codexPath) { _, _ in copiedLoginCommand = false }
+            .onAppear { if !store.settings.preparingSpeech { store.settings.refreshSpeechAvailability() } }
     }
 
     private var providers: some View {
@@ -164,17 +165,30 @@ struct SettingsView: View {
         @Bindable var settings = store.settings
         return VStack(alignment: .leading, spacing: 22) {
             VStack(alignment: .leading, spacing: 12) {
-                Text(settings.transcriptionReady ? "AI 정리" : "AI 준비")
+                Text("음성 인식 · Apple")
                     .font(.system(size: 14, weight: .medium))
                 caption("녹음하는 동안 음성을 텍스트로 옮기고, 녹음이 끝나면 전체 내용을 정리합니다.")
                 caption("음성 인식은 Mac에서 처리합니다. 교정과 핵심 요약에는 전사된 텍스트만 AI로 전달합니다.")
-                if !settings.transcriptionReady { caption(settings.transcriptionUnavailableReason) }
+                caption(settings.speechStatusMessage)
+                if settings.preparingSpeech {
+                    if case .downloading(let fraction) = settings.speechPreparation {
+                        ProgressView(value: fraction).frame(maxWidth: 280)
+                    } else { ProgressView().controlSize(.small) }
+                    Button("준비 취소") { settings.cancelSpeechPreparation() }
+                } else {
+                    HStack {
+                        if settings.transcriptionReady && settings.speechAvailability != .ready {
+                            Button("언어 모델 준비") { settings.prepareSpeech() }
+                        }
+                        Button("상태 확인") { settings.refreshSpeechAvailability() }
+                    }
+                }
             }
             HStack {
                 Text("녹음 언어").font(.system(size: 14))
                 Spacer()
                 Menu {
-                    ForEach(["ko", "en", "ja", "auto"], id: \.self) { code in
+                    ForEach(["ko", "en", "ja"], id: \.self) { code in
                         Button { settings.language = code } label: {
                             if settings.language == code { Label(languageName(code), systemImage: "checkmark") }
                             else { Text(languageName(code)) }
@@ -206,9 +220,6 @@ struct SettingsView: View {
             }
             DisclosureGroup("고급 설정", isExpanded: $advanced) {
                 VStack(alignment: .leading, spacing: 12) {
-                    pathRow("Whisper 실행 파일", value: $settings.whisperPath)
-                    pathRow("음성 인식 모델", value: $settings.whisperModel)
-                    pathRow("음성 감지 모델", value: $settings.vadModel)
                     pathRow("FFmpeg", value: $settings.ffmpegPath)
                     caption("FFmpeg는 가져온 파일을 녹음 형식으로 변환하는 데에 사용합니다.")
                     Divider().padding(.vertical, 4)
@@ -228,7 +239,7 @@ struct SettingsView: View {
     }
 
     private func languageName(_ code: String) -> String {
-        ["ko": "한국어", "en": "영어", "ja": "일본어", "auto": "자동 감지"][code] ?? code
+        ["ko": "한국어", "en": "영어", "ja": "일본어"][code] ?? code
     }
 
     private var microphoneStatus: String {

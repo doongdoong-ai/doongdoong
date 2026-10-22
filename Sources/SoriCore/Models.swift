@@ -33,7 +33,7 @@ public struct TranscriptSegment: Codable, Identifiable, Equatable, Sendable {
     public var originalText: String
     // Missing in legacy recordings. Approximate positions never drive follow-along.
     public var timingQuality: String?
-    public var hasReliableTiming: Bool { timingQuality == nil || timingQuality == "aligned" || timingQuality == "whisper" }
+    public var hasReliableTiming: Bool { timingQuality == nil || timingQuality == "aligned" || timingQuality == "whisper" || timingQuality == "apple-speech" }
     public init(id: Int, start: Double, end: Double, text: String, originalText: String? = nil) {
         self.id = id; self.start = start; self.end = end; self.text = text
         self.originalText = originalText ?? text
@@ -124,7 +124,7 @@ public enum Transcript {
         return segment.hasReliableTiming && time < segment.end ? segment.id : nil
     }
 
-    public static func parseWhisper(_ data: Data, duration: Double) throws -> [TranscriptSegment] {
+    public static func parseLegacyTranscript(_ data: Data, duration: Double) throws -> [TranscriptSegment] {
         guard duration.isFinite, duration > 0 else { throw SoriError.message("오디오 길이를 확인할 수 없습니다.") }
         struct Output: Decodable {
             struct Segment: Decodable {
@@ -134,7 +134,7 @@ public enum Transcript {
             }
             let transcription: [Segment]
         }
-        // whisper.cpp can emit an incomplete UTF-8 sequence in a segment (or a
+        // Legacy transcription files can contain an incomplete UTF-8 sequence in a segment (or a
         // token in older full-JSON outputs). Replace only malformed sequences with
         // U+FFFD; never guess missing speech, discard a segment, or relax JSON syntax.
         let json = String(data: data, encoding: .utf8) == nil

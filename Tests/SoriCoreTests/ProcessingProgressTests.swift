@@ -15,4 +15,11 @@ final class ProcessingProgressTests: XCTestCase {
         XCTAssertEqual(ProcessingProgress(stage: .transcription, detail: "", completed: 60, total: 120, unit: .audio).countLabel, "01:00 / 02:00 전사")
         XCTAssertNotNil(ProcessingProgress(stage: .transcription, detail: "", completed: .greatestFiniteMagnitude, total: .greatestFiniteMagnitude, unit: .audio).countLabel)
     }
+    func testLanguageModelDownloadHasItsOwnStageAndDoesNotClaimAudioCoverage() {
+        let value = ProcessingProgress(stage: .speechPreparation, detail: "언어 모델 준비", completed: 0.4, total: 1, unit: .download)
+        XCTAssertEqual(value.stage.step, .transcription)
+        XCTAssertEqual(value.countLabel, "40% 다운로드")
+        XCTAssertEqual(value.fraction, 0.4)
+    }
+
 }

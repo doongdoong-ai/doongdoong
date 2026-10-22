@@ -61,13 +61,21 @@ enum TranscriptionPipeline {
         let started = ProcessInfo.processInfo.systemUptime
         let original = try await LocalTranscription.transcribe(audio: audio, directory: directory,
             configuration: settings.transcription, recognizer: recognizer, onProgress: { value in
-                await onProgress?(.init(stage: .transcription, detail: "녹음 중 처리한 구간은 이어서 사용합니다.",
-                    completed: value.processedSeconds, total: value.totalSeconds, unit: .audio))
+                switch value.preparation {
+                case .checking:
+                    await onProgress?(.init(stage: .speechPreparation, detail: "이 Mac의 음성 인식 언어 모델을 확인합니다."))
+                case .downloading(let fraction):
+                    await onProgress?(.init(stage: .speechPreparation, detail: "처음 사용하는 언어 모델을 다운로드합니다. 녹음은 보관되어 있습니다.",
+                        completed: fraction, total: fraction == nil ? nil : 1, unit: .download))
+                case nil:
+                    await onProgress?(.init(stage: .transcription, detail: "녹음 중 처리한 구간은 이어서 사용합니다.",
+                        completed: value.processedSeconds, total: value.totalSeconds, unit: .audio))
+                }
             })
         timings["transcriptionSeconds"] = ProcessInfo.processInfo.systemUptime - started
         guard !original.isEmpty else { return .noSpeech }
         let reviewRanges: [AudioReviewRange] = []
-        // The local core owns uncorrected words and native Whisper timestamps.
+        // The local core owns uncorrected words and native Apple Speech timestamps.
         // Text review must not change those times or the original text.
         var final = original
         var warnings: [String] = []

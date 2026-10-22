@@ -13,10 +13,10 @@ public struct ProcessingProgress: Equatable, Sendable {
         }
     }
     public enum Stage: Sendable {
-        case finishingRecording, preparing, transcription, context, correction, analysis, synthesis, saving
+        case finishingRecording, preparing, speechPreparation, transcription, context, correction, analysis, synthesis, saving
         public var step: Step {
             switch self {
-            case .finishingRecording, .preparing, .transcription: .transcription
+            case .finishingRecording, .preparing, .speechPreparation, .transcription: .transcription
             case .context, .correction: .correction
             case .analysis, .synthesis: .summary
             case .saving: .saving
@@ -26,6 +26,7 @@ public struct ProcessingProgress: Equatable, Sendable {
             switch self {
             case .finishingRecording: "녹음을 마무리하고 있어요"
             case .preparing: "녹음 파일을 확인하고 있어요"
+            case .speechPreparation: "음성 인식을 준비하고 있어요"
             case .transcription: "음성을 텍스트로 옮기고 있어요"
             case .context: "강의 전체의 문맥을 확인하고 있어요"
             case .correction: "전사문을 교정하고 있어요"
@@ -35,7 +36,7 @@ public struct ProcessingProgress: Equatable, Sendable {
             }
         }
     }
-    public enum Unit: Sendable { case audio, sentences, sections }
+    public enum Unit: Sendable { case audio, sentences, sections, download }
     public let stage: Stage
     public let detail: String
     public let completed: Double?
@@ -55,6 +56,7 @@ public struct ProcessingProgress: Equatable, Sendable {
     public var countLabel: String? {
         guard fraction != nil, let completed, let total else { return nil }
         switch unit {
+        case .download: return "\(Int(min(1, max(0, completed / total)) * 100))% 다운로드"
         case .audio: return "\(TimeText.clock(min(max(0, completed), Double(Int32.max)))) / \(TimeText.clock(min(total, Double(Int32.max)))) 전사"
         case .sentences: return "\(Int(min(max(0, completed), Double(Int32.max)))) / \(Int(min(total, Double(Int32.max))))문장 확인"
         case .sections: return "\(Int(min(max(0, completed), Double(Int32.max)))) / \(Int(min(total, Double(Int32.max))))구간 완료"

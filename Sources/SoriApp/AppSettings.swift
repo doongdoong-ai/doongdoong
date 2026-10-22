@@ -8,12 +8,9 @@ import DoongdoongCodex
 
 @Observable @MainActor
 final class AppSettings {
-    var language: String { didSet { defaults.set(language, forKey: "language") } }
+    var language: String { didSet { defaults.set(language, forKey: "language"); refreshSpeechAvailability() } }
     var codexPath: String { didSet { defaults.set(codexPath, forKey: "codexPath"); refreshAIConnection() } }
     var ffmpegPath: String { didSet { defaults.set(ffmpegPath, forKey: "ffmpegPath") } }
-    var whisperPath: String { didSet { defaults.set(whisperPath, forKey: "whisperPath") } }
-    var whisperModel: String { didSet { defaults.set(whisperModel, forKey: "whisperModel") } }
-    var vadModel: String { didSet { defaults.set(vadModel, forKey: "vadModel") } }
     var analysisEnabled: Bool { didSet { defaults.set(analysisEnabled, forKey: "analysisEnabled") } }
     var preferredModelID: String { didSet { defaults.set(preferredModelID, forKey: "codexPreferredModel"); selectFromCatalog() } }
     var reasoningEffort: ReasoningEffort { didSet { defaults.set(reasoningEffort.rawValue, forKey: "codexReasoningEffort"); selectFromCatalog() } }
@@ -111,12 +108,11 @@ final class AppSettings {
                 if let value = legacy.object(forKey: key) { defaults.set(value, forKey: key) }
             }
         }
-        language = defaults.string(forKey: "language") ?? "ko"
+        let savedLanguage = defaults.string(forKey: "language") ?? "ko"
+        language = savedLanguage == "auto" ? "ko" : savedLanguage
+        defaults.set(savedLanguage == "auto" ? "ko" : savedLanguage, forKey: "language")
         codexPath = defaults.string(forKey: "codexPath") ?? Self.find("codex")
         ffmpegPath = defaults.string(forKey: "ffmpegPath") ?? Self.find("ffmpeg")
-        whisperPath = defaults.string(forKey: "whisperPath") ?? Self.find("whisper-server")
-        whisperModel = defaults.string(forKey: "whisperModel") ?? Self.modelPath("ggml-large-v3-turbo.bin")
-        vadModel = defaults.string(forKey: "vadModel") ?? Self.modelPath("ggml-silero-v6.2.0.bin")
         analysisEnabled = defaults.object(forKey: "analysisEnabled") == nil || defaults.bool(forKey: "analysisEnabled")
         preferredModelID = defaults.string(forKey: "codexPreferredModel") ?? ""
         reasoningEffort = ReasoningEffort(rawValue: defaults.string(forKey: "codexReasoningEffort") ?? "") ?? .medium
@@ -129,28 +125,82 @@ final class AppSettings {
         return paths.map { "\($0)/\(name)" }.first { FileManager.default.isExecutableFile(atPath: $0) } ?? "/opt/homebrew/bin/\(name)"
     }
 
-    static func modelPath(_ name: String) -> String {
-        let support = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")
-        let paths = ["Doongdoong/Models", "Sori/Models"].map { support.appendingPathComponent($0).appendingPathComponent(name).path }
-        return paths.first { FileManager.default.isReadableFile(atPath: $0) } ?? paths[0]
-    }
-
+    private(set) var speechAvailability: SpeechAvailability?
+    private(set) var speechPreparation: SpeechPreparation?
+    private(set) var speechPreparationError: String?
+    private var speechTask: Task<Void, Never>?
+    private var speechGeneration = UUID()
+    var preparingSpeech: Bool { speechPreparation != nil }
+    // Unknown/downloadable assets must not block recording or queueing. The core
+    // verifies support and prepares assets before touching an unprocessed chunk.
     var transcriptionReady: Bool {
-        FileManager.default.isExecutableFile(atPath: (whisperPath as NSString).expandingTildeInPath)
-            && FileManager.default.isReadableFile(atPath: (whisperModel as NSString).expandingTildeInPath)
-            && FileManager.default.isReadableFile(atPath: (vadModel as NSString).expandingTildeInPath)
+        speechAvailability != .unavailable && speechAvailability != .unsupportedLanguage
     }
     var transcriptionUnavailableReason: String {
-        "음성 인식 준비가 필요합니다. 설치 스크립트를 실행하거나 고급 설정에서 모델 위치를 확인해 주세요. 녹음은 계속 저장됩니다."
+        switch speechAvailability {
+        case .unavailable: return "이 Mac에서는 Apple 음성 인식을 사용할 수 없습니다. 녹음은 계속 저장됩니다."
+        case .unsupportedLanguage: return "선택한 언어를 지원하지 않습니다. 설정에서 녹음 언어를 변경해 주세요."
+        default: return "Apple 음성 인식을 준비하고 있어요. 녹음은 계속 저장됩니다."
+        }
+    }
+    var speechStatusMessage: String {
+        if let speechPreparationError { return speechPreparationError }
+        if let speechPreparation {
+            switch speechPreparation {
+            case .checking: return "언어 모델을 확인하고 있어요."
+            case .downloading: return "음성 인식 언어 모델을 다운로드하고 있어요."
+            }
+        }
+        switch speechAvailability {
+        case .ready: return "언어 모델이 준비되어 있습니다. 인터넷 없이 음성을 인식합니다."
+        case .downloadRequired: return "처음 사용할 때 언어 모델을 다운로드합니다. 인터넷 연결이 필요합니다."
+        case .downloading: return "macOS가 언어 모델을 다운로드하고 있습니다."
+        case .unavailable, .unsupportedLanguage: return transcriptionUnavailableReason
+        case nil: return "이 Mac의 음성 인식 지원 상태를 확인합니다."
+        }
+    }
+    @discardableResult func refreshSpeechAvailability() -> Task<Void, Never> {
+        cancelSpeechPreparation()
+        speechAvailability = nil; speechPreparationError = nil
+        let generation = speechGeneration, configuration = SpeechConfiguration(language: language)
+        let task = Task { [weak self] in
+            let status = await AppleSpeechEngine.availability(configuration: configuration)
+            guard let self, !Task.isCancelled, self.speechGeneration == generation else { return }
+            self.speechAvailability = status
+        }
+        speechTask = task
+        return task
+    }
+    func prepareSpeech() {
+        cancelSpeechPreparation()
+        speechPreparation = .checking; speechPreparationError = nil
+        let generation = speechGeneration, configuration = SpeechConfiguration(language: language)
+        speechTask = Task { [weak self] in
+            do {
+                try await LocalTranscription.engine.prepare(configuration: configuration) { [weak self] progress in
+                    await self?.receiveSpeechProgress(progress, generation: generation)
+                }
+                guard let self, !Task.isCancelled, self.speechGeneration == generation else { return }
+                self.speechAvailability = .ready; self.speechPreparation = nil; self.speechTask = nil
+            } catch {
+                guard let self, !Task.isCancelled, self.speechGeneration == generation else { return }
+                self.speechPreparation = nil; self.speechPreparationError = error.localizedDescription; self.speechTask = nil
+            }
+        }
+    }
+    func cancelSpeechPreparation() {
+        speechGeneration = UUID(); speechTask?.cancel(); speechTask = nil; speechPreparation = nil
+    }
+    private func receiveSpeechProgress(_ progress: SpeechPreparation, generation: UUID) {
+        guard speechGeneration == generation else { return }
+        speechPreparation = progress
     }
     var codexReady: Bool { FileManager.default.isExecutableFile(atPath: codexPath) }
     var analysisReady: Bool { analysisEnabled && codexReady && selectedModel != nil }
     var snapshot: PipelineSettings {
         .init(codex: codexPath, ffmpeg: ffmpegPath, language: language, aiModel: analysisEnabled ? selectedModel : nil,
               reasoningEffort: reasoningEffort, requestTimeout: requestTimeout,
-              transcription: .init(executable: URL(fileURLWithPath: (whisperPath as NSString).expandingTildeInPath),
-                                   model: URL(fileURLWithPath: (whisperModel as NSString).expandingTildeInPath),
-                                   vadModel: URL(fileURLWithPath: (vadModel as NSString).expandingTildeInPath), language: language))
+              transcription: .init(language: language))
     }
 }
 
@@ -161,11 +211,11 @@ struct PipelineSettings: Sendable {
     let aiModel: CodexModel?
     let reasoningEffort: ReasoningEffort
     let requestTimeout: Double
-    let transcription: WhisperConfiguration
+    let transcription: SpeechConfiguration
 
     init(codex: String, ffmpeg: String, language: String, aiModel: CodexModel? = nil,
          reasoningEffort: ReasoningEffort = .medium, requestTimeout: Double = 300,
-         transcription: WhisperConfiguration) {
+         transcription: SpeechConfiguration) {
         self.codex = codex; self.ffmpeg = ffmpeg; self.language = language
         self.aiModel = aiModel; self.transcription = transcription
         self.reasoningEffort = reasoningEffort; self.requestTimeout = requestTimeout

@@ -18,9 +18,9 @@ final class TranscriptTests: XCTestCase {
         XCTAssertNil(Transcript.activeID(at: 10, in: []))
     }
 
-    func testWhisperClampsOverlapsAndAudioEnd() throws {
+    func testLegacyTranscriptClampsOverlapsAndAudioEnd() throws {
         let json = #"{"transcription":[{"offsets":{"from":-100,"to":2000},"text":" 시작 "},{"offsets":{"from":1900,"to":4000},"text":"두 번째"},{"offsets":{"from":5000,"to":7000},"text":"파일 밖"},{"offsets":{"from":7000,"to":7000},"text":""}]}"#
-        let parsed = try Transcript.parseWhisper(Data(json.utf8), duration: 3.5)
+        let parsed = try Transcript.parseLegacyTranscript(Data(json.utf8), duration: 3.5)
         XCTAssertEqual(parsed.count, 2)
         XCTAssertEqual(parsed[0].start, 0)
         XCTAssertEqual(parsed[0].text, "시작")
@@ -28,12 +28,12 @@ final class TranscriptTests: XCTestCase {
         XCTAssertEqual(parsed[1].end, 3.5)
     }
 
-    func testWhisperIncompleteKoreanUTF8DoesNotLoseTheLecture() throws {
+    func testLegacyTranscriptIncompleteKoreanUTF8DoesNotLoseTheLecture() throws {
         var data = Data(#"{"transcription":[{"offsets":{"from":1406610,"to":1407780},"text":"앞부분 "#.utf8)
         // A Korean syllable cut after two bytes, as reproduced in CLI output.
         data.append(contentsOf: [0xEB, 0xA3])
         data.append(Data(#" 뒤 문장"},{"offsets":{"from":4000000,"to":4002000},"text":"강의 끝"}]}"#.utf8))
-        let parsed = try Transcript.parseWhisper(data, duration: 4100)
+        let parsed = try Transcript.parseLegacyTranscript(data, duration: 4100)
         XCTAssertEqual(parsed.count, 2)
         XCTAssertEqual(parsed[0].text, "앞부분 � 뒤 문장")
         XCTAssertEqual(parsed[0].originalText, parsed[0].text)
@@ -46,10 +46,10 @@ final class TranscriptTests: XCTestCase {
         var data = Data(#"{"transcription":[{"offsets":{"from":0,"to":2000},"text":"정상 문장","tokens":[{"text":""#.utf8)
         data.append(0xEB)
         data.append(Data(#""}]}]}"#.utf8))
-        let parsed = try Transcript.parseWhisper(data, duration: 3)
+        let parsed = try Transcript.parseLegacyTranscript(data, duration: 3)
         XCTAssertEqual(parsed.map(\.text), ["정상 문장"])
         // Encoding repair must not accept truncated or structurally malformed JSON.
-        XCTAssertThrowsError(try Transcript.parseWhisper(data.dropLast(), duration: 3))
+        XCTAssertThrowsError(try Transcript.parseLegacyTranscript(data.dropLast(), duration: 3))
     }
 
     func testCorrectionsPreserveIdentityTimingAndOriginalText() throws {
@@ -89,7 +89,7 @@ final class TranscriptTests: XCTestCase {
         XCTAssertNil(Transcript.activeID(at: .infinity, in: segments))
         let json = Data(#"{"transcription":[]}"#.utf8)
         for duration in [0, -1, .nan, .infinity] {
-            XCTAssertThrowsError(try Transcript.parseWhisper(json, duration: duration))
+            XCTAssertThrowsError(try Transcript.parseLegacyTranscript(json, duration: duration))
         }
     }
 
@@ -98,4 +98,13 @@ final class TranscriptTests: XCTestCase {
         let data = Data(#"{"segments":[{"id":0,"text":"첫째"},{"id":0,"text":"둘째"}]}"#.utf8)
         XCTAssertThrowsError(try Transcript.applyCorrections(data, to: corrupt))
     }
+    func testAppleAndLegacyTimingRemainClickable() {
+        for quality in ["apple-speech", "whisper", "aligned"] {
+            var segment = TranscriptSegment(id: 1, start: 1, end: 3, text: "강의")
+            segment.timingQuality = quality
+            XCTAssertTrue(segment.hasReliableTiming)
+            XCTAssertEqual(Transcript.activeID(at: 2, in: [segment]), 1)
+        }
+    }
+
 }

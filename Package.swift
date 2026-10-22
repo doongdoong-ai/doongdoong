@@ -1,13 +1,13 @@
-// swift-tools-version: 6.0
+// swift-tools-version: 6.2
 import PackageDescription
 
 let package = Package(
     name: "Sori",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS("26.0")],
     products: [.executable(name: "BungBungi", targets: ["SoriApp"]), .library(name: "SoriCore", targets: ["SoriCore"]),
                .executable(name: "DoongdoongTranscribe", targets: ["DoongdoongTranscribe"])],
     dependencies: [
-        .package(url: "https://github.com/doongdoong-ai/transcription-core.git", exact: "0.1.2"),
+        .package(url: "https://github.com/doongdoong-ai/transcription-core.git", exact: "0.3.0"),
         .package(url: "https://github.com/doongdoong-ai/codex-core.git", exact: "0.1.1")
     ],
     targets: [

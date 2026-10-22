@@ -89,7 +89,7 @@ final class ModelSelectionTests: XCTestCase {
             XCTAssertTrue(arguments.contains("model_provider=\"openai\""))
             XCTAssertTrue(arguments.contains("--ignore-user-config"))
         }
-        let settings = PipelineSettings(codex: "/usr/bin/true", ffmpeg: "", language: "ko", transcription: .init(executable: URL(fileURLWithPath: "/usr/bin/true"), model: URL(fileURLWithPath: "/tmp/model"), vadModel: URL(fileURLWithPath: "/tmp/vad")))
+        let settings = PipelineSettings(codex: "/usr/bin/true", ffmpeg: "", language: "ko", transcription: .init())
         XCTAssertThrowsError(try settings.requireModel())
     }
     @MainActor func testLocalTranscriptionDoesNotRequireCodexOrLogin() throws {
@@ -97,13 +97,22 @@ final class ModelSelectionTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
         defer { defaults.removePersistentDomain(forName: name) }
         defaults.set("/missing-codex", forKey: "codexPath")
-        defaults.set("/usr/bin/true", forKey: "whisperPath")
-        defaults.set("/usr/bin/true", forKey: "whisperModel")
-        defaults.set("/usr/bin/true", forKey: "vadModel")
         let settings = AppSettings(defaults: defaults)
         XCTAssertTrue(settings.transcriptionReady)
         XCTAssertFalse(settings.analysisReady)
         XCTAssertNil(settings.selectedModel)
+    }
+
+    @MainActor func testLegacyAutomaticLanguageMigratesToKoreanWithoutModelPaths() throws {
+        let name = "doongdoong-test-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        defaults.set("auto", forKey: "language")
+        let settings = AppSettings(defaults: defaults)
+        XCTAssertEqual(settings.language, "ko")
+        XCTAssertEqual(defaults.string(forKey: "language"), "ko")
+        XCTAssertEqual(settings.snapshot.transcription.localeIdentifier, "ko-KR")
+        XCTAssertTrue(settings.transcriptionReady, "Unknown/downloadable assets must not prevent recording")
     }
 
 }

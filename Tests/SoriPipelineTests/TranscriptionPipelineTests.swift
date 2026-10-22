@@ -9,7 +9,7 @@ private actor StubRecognizer: SpeechRecognizer {
     var calls = 0
     let invalid: Bool
     init(invalid: Bool = false) { self.invalid = invalid }
-    func transcribe(wave: Data, configuration: WhisperConfiguration) async throws -> [SpeechSegment] {
+    func transcribe(wave: Data, configuration: SpeechConfiguration) async throws -> [SpeechSegment] {
         calls += 1
         return [.init(start: 0, end: invalid ? 100 : 1, text: "원문 그대로 보관합니다.")]
     }
@@ -88,8 +88,7 @@ final class TranscriptionPipelineTests: XCTestCase {
         data.append(Data("data".utf8)); u32(32000)
         for index in 0..<16000 { u16(UInt16(bitPattern: Int16(sin(Double(index) * 0.1) * 10000))) }
         try data.write(to: audio)
-        let model = root.appendingPathComponent("model.bin"); try Data([1]).write(to: model)
-        let config = WhisperConfiguration(executable: URL(fileURLWithPath: "/usr/bin/true"), model: model, vadModel: model)
+        let config = SpeechConfiguration()
         return (root, audio, PipelineSettings(codex: "/usr/bin/false", ffmpeg: "/usr/bin/false", language: "ko", transcription: config))
     }
 
@@ -121,7 +120,7 @@ final class TranscriptionPipelineTests: XCTestCase {
         }
         _ = try await TranscriptionPipeline.transcribe(audio: audio, directory: root, duration: 1, settings: settings,
             recognizer: backend, provider: StubTextProvider(), onReviewed: { published = $0 })
-        XCTAssertEqual(published.first?.timingQuality, "whisper")
+        XCTAssertEqual(published.first?.timingQuality, "apple-speech")
         XCTAssertEqual(Transcript.activeID(at: 0.5, in: published), 0)
         let calls = await backend.calls; XCTAssertEqual(calls, 1)
     }

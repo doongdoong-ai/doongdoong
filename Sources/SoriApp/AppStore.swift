@@ -487,6 +487,7 @@ final class AppStore {
     func systemWillSleep() {
         guard !isTerminating, !isSleeping else { return }
         isSleeping = true
+        settings.cancelSpeechPreparation()
         NotificationCenter.default.post(name: Notification.Name("BungBungiWillSave"), object: nil)
         audio.pauseForSleep()
         if let id = recordingID {
@@ -609,6 +610,7 @@ final class AppStore {
     /// Return false to keep the app open when the latest metadata could not be saved.
     func prepareForTermination() async -> Bool {
         isTerminating = true
+        settings.cancelSpeechPreparation()
         await sleepTask?.value
         for id in [processingID].compactMap({ $0 }) + queue {
             update(id) { $0.work?.interrupt(.appClosed) }
@@ -715,7 +717,7 @@ final class AppStore {
             guard let project = projects.first else { return }
             let info = try await Task.detached { try AudioEngine.inspect(source) }.value
             guard !isTerminating, !isSleeping, !isPreparingForSleep else { return }
-            let originalSegments = try Transcript.parseWhisper(Data(contentsOf: transcript), duration: info.duration)
+            let originalSegments = try Transcript.parseLegacyTranscript(Data(contentsOf: transcript), duration: info.duration)
             var item = try repository.createRecording(project: project, title: "둥둥이, 처음 만나는 순간")
             try FileManager.default.copyItem(at: source, to: repository.audioURL(for: item))
             item.duration = info.duration; item.waveform = info.waveform; item.isDemo = true; item.status = .ready
