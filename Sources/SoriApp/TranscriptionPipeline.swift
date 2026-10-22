@@ -68,7 +68,7 @@ enum TranscriptionPipeline {
                     await onProgress?(.init(stage: .speechPreparation, detail: "처음 사용하는 언어 모델을 다운로드합니다. 녹음은 보관되어 있습니다.",
                         completed: fraction, total: fraction == nil ? nil : 1, unit: .download))
                 case nil:
-                    await onProgress?(.init(stage: .transcription, detail: "녹음 중 처리한 구간은 이어서 사용합니다.",
+                    await onProgress?(.init(stage: .transcription, detail: "저장된 음성을 텍스트로 옮깁니다. 이미 처리한 구간은 이어서 사용해요.",
                         completed: value.processedSeconds, total: value.totalSeconds, unit: .audio))
                 }
             })
@@ -95,7 +95,7 @@ enum TranscriptionPipeline {
             let review = try await LectureReview.review(original, cacheURL: directory.appendingPathComponent("final-review.json"),
                 identity: textProvider.identity, onProgress: { value in
                     onProgress?(.init(stage: value.phase == .context ? .context : .correction,
-                        detail: value.attempt > 1 ? "불확실한 수정안을 원문과 다시 대조하고 있어요." : "앞뒤 맥락을 확인하고 있어요. 교정이 끝나면 전사문을 보여드립니다.",
+                        detail: value.attempt > 1 ? "불확실한 수정안을 원문과 다시 대조하고 있어요." : "강의 전체의 맥락을 살펴 인식 오류와 띄어쓰기를 다듬습니다.",
                         completed: value.completed == value.total ? Double(value.completed) : nil,
                         total: value.completed == value.total ? Double(value.total) : nil,
                         unit: value.phase == .context ? .sections : .sentences,
@@ -156,22 +156,29 @@ enum TranscriptionPipeline {
         // Ordinary lectures fit in a single request. Longer recordings are analyzed in
         // consecutive sections, then synthesized without truncating the end of the lecture.
         let chunks = try TranscriptCorrection.chunks(segments, maximumBytes: 180_000, maximumSegments: 2500)
+        // Include synthesis in measured work, so a long lecture never shows 100%
+        // before the final title and cards have actually been validated.
+        let workCount = chunks.count + (chunks.count > 1 ? 1 : 0)
         var drafts: [LectureAnalysis.Draft] = []
         for (index, chunk) in chunks.enumerated() {
             onProgress?(.init(stage: .analysis, detail: "교수가 강조한 내용과 시험 안내를 원문에서 확인합니다.",
-                completed: chunks.count > 1 ? Double(index) : nil, total: chunks.count > 1 ? Double(chunks.count) : nil))
+                completed: chunks.count > 1 ? Double(index) : nil, total: chunks.count > 1 ? Double(workCount) : nil))
             let data = try await provider.generate(.init(instructions: lectureInstructions,
                 input: TranscriptCorrection.input(for: chunk), schema: LectureAnalysis.schema(for: chunk)))
             drafts.append(try LectureAnalysis.decode(data, source: chunk))
-            onProgress?(.init(stage: .analysis, detail: "요약과 발언 근거를 확인했습니다.", completed: Double(index + 1), total: Double(chunks.count)))
+            onProgress?(.init(stage: .analysis, detail: "요약과 발언 근거를 확인했습니다.", completed: Double(index + 1), total: Double(workCount)))
         }
         try Task.checkCancellation()
         if drafts.count == 1 { return LectureAnalysis.result(drafts[0]) }
-        onProgress?(.init(stage: .synthesis, detail: "중복을 정리하고 강의 전체를 대표하는 제목을 고릅니다."))
+        onProgress?(.init(stage: .synthesis, detail: "중복을 정리하고 강의 전체를 대표하는 제목을 고릅니다.",
+                         completed: Double(chunks.count), total: Double(workCount)))
         let selection = try await provider.generate(.init(instructions: synthesisInstructions,
             input: LectureAnalysis.synthesisInput(drafts),
             schema: LectureAnalysis.synthesisSchema(candidateCount: drafts.flatMap(\.highlights).count)))
-        return try LectureAnalysis.synthesize(selection, drafts: drafts)
+        let result = try LectureAnalysis.synthesize(selection, drafts: drafts)
+        onProgress?(.init(stage: .synthesis, detail: "제목과 핵심 요약을 확인했습니다.",
+                         completed: Double(workCount), total: Double(workCount)))
+        return result
     }
 
     private static func diagnostics(directory: URL, phase: String, outcome: String, error: Error? = nil, identity: TextProviderIdentity? = nil, chunks: Int? = nil) {
