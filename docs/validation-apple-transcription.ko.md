@@ -8,6 +8,8 @@
 
 전사 코어 0.3.0은 Apple `SpeechAnalyzer`와 `SpeechTranscriber`를 사용한다. Whisper 실행·설치 경로와 모델 설정을 제거했다. Codex 보정·요약은 별도 모듈과 기존 프롬프트를 유지한다. 최소 OS는 macOS 26이다.
 
+Whisper Notes의 공개 한국어 벤치마크와 자체 측정을 구분한 [Apple Speech 선택 근거](research/apple-speech-selection.ko.md)를 함께 참고한다.
+
 ## 기능 검증 결과
 
 | 확인한 항목 | 결과 |
