@@ -2,7 +2,7 @@ import Foundation
 import SoriCore
 import SoriSpeech
 
-/// Headless acceptance check: local Whisper transcription, native timestamps and selected-model analysis.
+/// Headless acceptance check: Apple Speech transcription, native timestamps and selected-model analysis.
 @MainActor
 enum IntegrationCheck {
     static func run(store: AppStore, reportURL: URL) async -> Bool {
@@ -127,7 +127,7 @@ enum IntegrationCheck {
             guard subtitles.contains(" --> ") else { throw SoriError.message("SRT export failed") }
             try Data(subtitles.utf8).write(to: store.root.appendingPathComponent("acceptance.srt"))
             checks.append("subtitle export")
-            let report: [String: Any] = ["passed": true, "checks": checks, "duration": saved.duration, "segments": saved.segments.count, "processingSeconds": processingSeconds, "scope": "batch-file-transcription-and-local-library", "model": selection.rawValue, "textCorrection": LectureReviewPrompts.version, "timing": "whisper-native", "syntheticAudio": !usesExisting]
+            let report: [String: Any] = ["passed": true, "checks": checks, "duration": saved.duration, "segments": saved.segments.count, "processingSeconds": processingSeconds, "scope": "batch-file-transcription-and-local-library", "model": selection.rawValue, "textCorrection": LectureReviewPrompts.version, "timing": "apple-speech-native", "syntheticAudio": !usesExisting]
             try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: reportURL, options: .atomic)
             return true
         } catch {

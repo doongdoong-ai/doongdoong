@@ -4,24 +4,24 @@ import DoongdoongTranscription
 
 /// Application adapter. Correction, titles and emphasis stay outside the core.
 public enum LocalTranscription {
-    public static let engine = WhisperEngine()
+    public static let engine = AppleSpeechEngine()
 
     public static func prepareRecording(directory: URL) throws {
         try TranscriptionSession.prepareRecording(directory: directory)
     }
 
-    public static func transcribe(audio: URL, directory: URL, configuration: WhisperConfiguration,
+    public static func transcribe(audio: URL, directory: URL, configuration: SpeechConfiguration,
                                   recognizer: any SpeechRecognizer = engine,
                                   onProgress: (@Sendable (TranscriptionProgress) async -> Void)? = nil) async throws -> [TranscriptSegment] {
         let session = TranscriptionSession(audio: audio, directory: directory, configuration: configuration, recognizer: recognizer)
         let speech = try await session.processAvailable(final: true, onProgress: onProgress)
         let segments = speech.enumerated().map { index, value in
             var segment = TranscriptSegment(id: index, start: value.start, end: value.end, text: value.text)
-            segment.timingQuality = "whisper"
+            segment.timingQuality = "apple-speech"
             return segment
         }
         let values = try JSONSerialization.jsonObject(with: JSONEncoder().encode(segments))
-        try JSONSerialization.data(withJSONObject: ["method": "local-whisper", "text": segments.map(\.text).joined(separator: "\n"),
+        try JSONSerialization.data(withJSONObject: ["method": "apple-speech", "text": segments.map(\.text).joined(separator: "\n"),
                                                      "segments": values], options: [.sortedKeys])
             .write(to: directory.appendingPathComponent("local-asr-original.json"), options: .atomic)
         return segments
@@ -41,7 +41,7 @@ public final class LocalRecordingTranscription {
     private var stopping = false
     public var onIssue: ((String) -> Void)?
 
-    public init(audio: URL, directory: URL, configuration: WhisperConfiguration) {
+    public init(audio: URL, directory: URL, configuration: SpeechConfiguration) {
         session = TranscriptionSession(audio: audio, directory: directory, configuration: configuration, recognizer: LocalTranscription.engine)
     }
 

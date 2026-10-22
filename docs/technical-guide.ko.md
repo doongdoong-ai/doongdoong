@@ -15,21 +15,21 @@
 
 앱의 `SoriSpeech/LocalTranscription.swift`는 코어 출력을 기존 `TranscriptSegment`로 바꾸는 어댑터입니다. 코어는 SoriCore, SwiftUI, Codex, 로그인 정보에 의존하지 않습니다. 원문과 타임스탬프는 코어가 결정하고, 보정은 문장 ID·원문·시간을 바꿀 수 없습니다.
 
-## 메모리에 유지한 모델로 증분 처리
+## Apple Speech로 증분 처리
 
 AVAudioRecorder가 16 kHz·mono·PCM16 WAV를 저장합니다. 앱이 2초마다 새 구간을 확인하며, 최대 60초 구간의 끝부분 5초에서 260 ms 이상의 쉼을 우선 경계로 사용합니다. 이미 처리한 음성을 겹쳐 반복 디코딩하지 않습니다.
 
-`WhisperEngine` 하나를 녹음과 파일 가져오기 세션이 공유합니다. 첫 요청에서 whisper-server와 large-v3-turbo FP16 모델을 로딩하고 다음 요청부터 재사용합니다. actor의 reentrancy와 별도로 FIFO gate를 두어 추론과 모델 변경을 직렬화합니다. 앱 종료 시 엔진을 해제합니다.
+`AppleSpeechEngine` 하나를 녹음과 파일 가져오기 세션이 공유합니다. `SpeechAnalyzer` + `SpeechTranscriber`가 기기에서 파일을 분석하고, `AssetInventory`가 언어 지원 확인과 필요한 모델 설치를 맡습니다. 앱 설정에는 준비 상태와 다운로드 진행을 표시합니다. 마이크 권한은 녹음에 필요하며, 파일 전사는 마이크를 열지 않습니다. 명시적 언어를 사용하고 이전 `auto` 설정은 한국어로 이관합니다.
 
-서버는 127.0.0.1의 임시 포트·무작위 경로에서만 동작합니다. WAV multipart 요청의 verbose_json 응답에서 세그먼트 시각을 얻고 구간 오프셋을 더합니다. 리다이렉트를 거부하고 자식 프로세스에 인증정보를 전달하지 않습니다. localhost HTTP는 IPC이며 외부 음성 업로드가 아닙니다.
+FIFO gate가 준비·추론을 직렬화하고 대기 중인 작업의 취소도 처리합니다. `.lingering` 정책으로 짧은 구간 사이의 모델 재사용을 시스템에 맡깁니다. 자식 프로세스·localhost HTTP·Whisper 런타임·GGML 모델·Silero VAD가 없습니다. `unload()`는 이 엔진이 소유한 언어 예약만 해제하며 시스템 자산을 삭제하지 않습니다.
 
-Silero VAD를 사용하고 디지털 무음은 디코더에 보내지 않습니다. 작은 발화를 놓치거나 Whisper가 반복·환각을 만들 가능성은 남습니다. native timestamp는 단어 단위 강제 정렬이 아니며 정확성을 보증하지 않습니다. 새 결과의 timingQuality는 whisper이고 이전 aligned/approximate 기록도 읽습니다.
+Apple이 반환한 시간 속성 텍스트 run을 문장부호 또는 100자·12초 기준으로 묶습니다. 텍스트 일부의 시간 정보가 빠지거나 유효하지 않으면 결과 구간 시각을 사용해 원문을 보존합니다. 실제 음성과 완벽히 일치한다는 보장은 아닙니다. 새 `timingQuality`는 `apple-speech`이며 과거 `whisper`·`aligned` 기록도 그대로 재생합니다.
 
-정상 녹음 종료는 진행 중인 추론을 취소하지 않습니다. 해당 구간을 마친 뒤 완료한 결과를 재사용하여 마지막 잔여 구간을 처리합니다. 앱 종료·사용자 취소 시 실행 중 엔진을 종료하되 완료된 체크포인트는 유지합니다.
+디지털 무음은 인식기에 보내지 않지만 작은 발화는 진폭 기준으로 제거하지 않습니다. 정상 종료에서는 진행 중 구간을 마치고 마지막 잔여 구간만 전사합니다. 취소·잠자기에는 `cancelAndFinishNow()`로 분석을 중단합니다. 구간 분석에 180초 제한을 둡니다.
 
 ## 실패·재개·분석
 
-구간 완료 전에는 커서를 전진시키지 않습니다. PCM SHA-256·언어·분할 설정·엔진/모델 파일 식별 정보를 확인한 결과만 재사용합니다. 모델은 경로·크기·수정 시각·inode로 식별하므로 실행 중 덮어쓰지 않아야 합니다. 같은 작업 폴더의 중복 처리는 파일 잠금으로 막습니다.
+구간 완료 전에는 커서를 전진시키지 않습니다. PCM SHA-256·언어·분할 설정·엔진과 OS 버전을 확인한 결과만 재사용합니다. Apple 모델의 독립 revision은 확보하지 못하므로 같은 OS에서 모델만 갱신되는 경우까지 식별하지는 못합니다. 기존 Whisper 체크포인트는 새 전사에 섞지 않습니다. 같은 작업 폴더의 중복 처리는 파일 잠금으로 막습니다.
 
 전사 오류는 녹음을 중단하지 않고 30초 뒤 재시도합니다. 미완성 WAV 헤더는 별도 audio-local-recovered.wav로 복구하며 원본은 덮어쓰지 않습니다. 이전 앱의 live-asr 녹음 복구도 유지합니다.
 
@@ -47,7 +47,7 @@ Silero VAD를 사용하고 디지털 무음은 디코더에 보내지 않습니�
 
 ## 잠자기와 갑작스러운 종료
 
-녹음기를 열기 전에 복구 표식을 남기므로 첫 전사 요청 전에 앱이 종료돼도 복구할 수 있습니다. 저장된 PCM의 완전한 샘플만 별도 WAV로 복구하고, 원본은 보존합니다. WAV 뒤의 메타데이터는 음성으로 읽지 않습니다. 코어의 감독 프로세스는 소유 앱 파이프의 EOF를 감지하여 상주 Whisper를 정리합니다.
+녹음기를 열기 전에 복구 표식을 남기므로 첫 전사 요청 전에 앱이 종료돼도 복구할 수 있습니다. 저장된 PCM의 완전한 샘플만 별도 WAV로 복구하고, 원본은 보존합니다. WAV 뒤의 메타데이터는 음성으로 읽지 않습니다. 별도 엔진 프로세스를 실행하지 않으므로 강제 종료 뒤 남는 앱 소유 인식 서버가 없습니다.
 
 앱은 NSWorkspace 전용 알림 센터의 `willSleepNotification`에서 녹음·재생을 동기적으로 일시 정지하고 메모와 작업 의도를 저장합니다. 실행 중 추론 취소·엔진 해제는 비동기로 처리합니다. Apple 문서는 [잠자기 전 알림](https://developer.apple.com/documentation/appkit/nsworkspace/willsleepnotification)과 [깨우기 알림](https://developer.apple.com/documentation/appkit/nsworkspace/didwakenotification)을 이 알림 센터에서 받도록 명시합니다.
 
@@ -73,22 +73,22 @@ Silero VAD를 사용하고 디지털 무음은 디코더에 보내지 않습니�
 
 교정이 끝난 전사문이 있으면 위쪽의 작은 진행 패널에서 상태를 확인하며 읽기·재생을 계속할 수 있습니다. 대기 중인 녹음은 앞선 작업 수를 보여 주고, 실패한 단계는 재시도 필요로 표시합니다. 요약만 재시도할 때는 요약·저장만 표시합니다.
 
-Whisper 전사는 모델 설치 이후 계정·인터넷·API 비용이 필요 없습니다. Codex는 텍스트 교정·제목·핵심 요약에만 사용하며 계정 한도가 적용됩니다. 이전 내부 받아쓰기·MMS 구현은 과거 비교·복구용으로 남아 있지만 현재 제품 전사 경로에서는 호출하지 않습니다.
+Apple 전사는 언어 모델 준비 이후 계정·인터넷·API 비용이 필요 없습니다. Codex는 텍스트 교정·제목·핵심 요약에만 사용하며 계정 한도가 적용됩니다. 이전 내부 받아쓰기·MMS 구현은 과거 비교·복구용으로 남아 있지만 현재 제품 전사 경로에서는 호출하지 않습니다.
 
 ## 준비와 빌드
 
-macOS 14+, Swift 6, Homebrew가 필요합니다. whisper.cpp 1.9.5에서 검증했습니다.
+macOS 26+, Swift 6.2·macOS 26 SDK가 필요합니다. Apple Silicon M1에서 검증했습니다. Homebrew의 FFmpeg는 가져온 파일을 PCM으로 변환할 때 사용합니다.
 
 ```sh
-brew install whisper.cpp ffmpeg
+brew install ffmpeg
 ./scripts/setup-engine.sh
 swift test
 ./scripts/build-app.sh
 ```
 
-설치 스크립트는 SPM 의존성을 받은 뒤 전사 코어의 모델 설치 스크립트에 위임합니다. 기본 위치는 ~/Library/Application Support/Doongdoong/Models이며 기존 Sori/Models의 Turbo 모델도 재사용합니다. SHA-256을 검증하고 MMS·Python은 설치하지 않습니다. 기존 모델은 자동 삭제하지 않습니다.
+설치 스크립트는 OS와 Swift 패키지를 확인하며 별도 음성 모델을 설치하지 않습니다. 앱의 언어 모델 준비 또는 첫 전사에서 macOS가 자산을 설치합니다. 과거 모델 파일은 자동 삭제하지 않으며 현재 앱에서 읽지 않습니다.
 
-독립 CLI는 코어의 doongdoong-transcribe, 앱 저장소의 호환 명령은 DoongdoongTranscribe입니다. 인자는 AUDIO OUTPUT_DIRECTORY WHISPER_SERVER MODEL VAD [LANGUAGE]이며 교정이나 로그인은 실행하지 않습니다.
+독립 CLI는 코어의 `doongdoong-transcribe`, 앱의 CLI는 `DoongdoongTranscribe`입니다. 인자는 `AUDIO OUTPUT_DIRECTORY [LANGUAGE]`이며 교정이나 로그인은 실행하지 않습니다.
 
 --library는 격리된 라이브러리, --demo --snapshot은 창 없는 렌더링입니다. --integration-report는 창·마이크 없이 전사부터 Codex 분석까지 검사하므로 로그인과 계정 한도가 필요합니다.
 
@@ -109,7 +109,7 @@ swift test
 └── transcript-history/          # 재처리 전 기존 기록
 ```
 
-[중단·교정 공개 검증](validation-interruption-recovery.ko.md) · [로컬 전사 도입 검증](validation-local-transcription.ko.md) · [이전 파일 전사 검증](validation-codex-file-transcription.ko.md) · [외부 구성요소](third-party-notices.md)
+[중단·교정 공개 검증](validation-interruption-recovery.ko.md) · [Apple 전사 전환 검증](validation-apple-transcription.ko.md) · [이전 파일 전사 검증](validation-codex-file-transcription.ko.md) · [외부 구성요소](third-party-notices.md)
 
 외부 배포용 서명·공증, 화자 분리, 시스템 오디오 녹음, 단어 단위 정렬은 현재 지원하지 않습니다.
 
