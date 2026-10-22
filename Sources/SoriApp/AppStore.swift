@@ -29,7 +29,7 @@ final class AppStore {
     private var lectureOnlyIDs: Set<UUID> = []
     var processingProgress: ProcessingProgress?
     var processingStartedAt: Date?
-    var processingStepStartedUptime: TimeInterval?
+    var processingEstimateStartedUptime: TimeInterval?
     var processingIssues: Set<ProcessingProgress.Step> = []
     var processingCompletedSteps: Set<ProcessingProgress.Step> = []
     var processingSummaryOnly = false
@@ -120,10 +120,21 @@ final class AppStore {
         if let processingID { return processingID == id ? processingProgress : nil }
         return finalizingID == id ? processingProgress : nil
     }
+    func isSummaryOnly(_ id: UUID) -> Bool {
+        if processingID == id { return processingSummaryOnly }
+        return lectureOnlyIDs.contains(id) || recordings.first(where: { $0.id == id })?.work?.kind == .summary
+    }
     func updateProgress(_ value: ProcessingProgress, for id: UUID) {
         guard processingID.map({ $0 == id }) ?? (finalizingID == id) else { return }
         guard !isSleeping, !isPreparingForSleep else { return }
-        if processingProgress?.stage.step != value.stage.step { processingStepStartedUptime = ProcessInfo.processInfo.systemUptime }
+        if processingProgress?.stage.step != value.stage.step {
+            processingEstimateStartedUptime = nil
+        }
+        // Connection checks are not inference time; retries within the same step
+        // must not restart the estimate or send the bar backwards.
+        if value.estimatedDuration != nil, processingEstimateStartedUptime == nil {
+            processingEstimateStartedUptime = ProcessInfo.processInfo.systemUptime
+        }
         if recordings.first(where: { $0.id == id })?.work?.step != value.stage.step {
             update(id) { $0.work?.step = value.stage.step }
         }
@@ -375,7 +386,11 @@ final class AppStore {
         let id = queue.removeFirst()
         guard update(id, { $0.work?.state = .running; $0.work?.cause = nil }) else { return }
         processingID = id
-        processingProgress = nil; processingStartedAt = Date(); processingIssues = []; processingCompletedSteps = []
+        let continuedFromRecording = processingProgress?.stage == .finishingRecording
+        processingProgress = nil
+        if !continuedFromRecording { processingStartedAt = Date() }
+        processingEstimateStartedUptime = nil
+        processingIssues = []; processingCompletedSteps = []
         let lectureOnly = lectureOnlyIDs.remove(id) != nil
         processingSummaryOnly = lectureOnly
         updateProgress(.init(stage: lectureOnly ? .analysis : .preparing,
@@ -385,7 +400,8 @@ final class AppStore {
             guard let self else { return }
             defer {
                 self.processingID = nil; self.pipelineTask = nil; self.processingProgress = nil
-                self.processingStartedAt = nil; self.runNext()
+                self.processingStartedAt = nil
+                self.processingEstimateStartedUptime = nil; self.runNext()
             }
             do {
                 guard let item = self.recordings.first(where: { $0.id == id }), let repository = self.repository else { return }

@@ -30,12 +30,32 @@ private actor StubRecognizer: SpeechRecognizer {
         if request.instructions == LectureReviewPrompts.correction {
             return Data(#"{"complete":true,"edits":[]}"#.utf8)
         }
+        if request.instructions.hasPrefix("Combine analyses") {
+            return Data(#"{"title":"원문 보관","selectedIDs":[]}"#.utf8)
+        }
         if invalidAnalysis { return Data("{}".utf8) }
         return Data(#"{"title":"원문 보관","synopsis":"원문을 그대로 보관한다는 설명입니다.","highlights":[]}"#.utf8)
     }
 }
 
 final class TranscriptionPipelineTests: XCTestCase {
+    @MainActor func testLongLectureSummaryOnlyCompletesAfterSynthesis() async throws {
+        let (root, _, settings) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let segments = (0..<4).map { TranscriptSegment(id: $0, start: Double($0), end: Double($0 + 1),
+                                                       text: String(repeating: "강의 내용입니다. ", count: 3000)) }
+        var progress: [ProcessingProgress] = []
+        let provider = StubTextProvider()
+        _ = try await TranscriptionPipeline.organize(segments: segments, directory: root, settings: settings,
+                                                    provider: provider, onProgress: { progress.append($0) })
+        XCTAssertGreaterThan(provider.requests, 2)
+        XCTAssertTrue(progress.filter { $0.stage == .analysis }.allSatisfy { ($0.fraction ?? 0) < 1 })
+        XCTAssertEqual(progress.last?.stage, .synthesis)
+        XCTAssertEqual(progress.last?.fraction, 1)
+        let fractions = progress.compactMap(\.fraction)
+        XCTAssertEqual(fractions, fractions.sorted())
+    }
+
     @MainActor func testIndependentProviderProcessesTextWithMeasuredStageProgress() async throws {
         let (root, audio, settings) = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }

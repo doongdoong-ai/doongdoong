@@ -86,22 +86,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         if args.contains("--focus-preview") { store.focusMode = true }
         // Give the bundled demo time to load, then construct the view from its final state.
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-            // Preview the same user-facing state for both internal AI stages.
-            // This mutates only the temporary in-memory fixture, never runs a job.
-            if args.contains("--processing-preview") || args.contains("--polishing-preview"),
+            // Mutate only the temporary fixture; never run recognition or AI requests.
+            if args.contains("--processing-preview") || args.contains("--polishing-preview") || args.contains("--summary-preview") || args.contains("--queued-preview"),
                let id = self.store.selectedID,
                let index = self.store.recordings.firstIndex(where: { $0.id == id }) {
-                self.store.recordings[index].status = args.contains("--polishing-preview") ? .polishing : .transcribing
+                self.store.recordings[index].status = args.contains("--polishing-preview") || args.contains("--summary-preview") ? .polishing : .transcribing
+                self.store.recordings[index].lectureHighlights = nil
                 if !args.contains("--transcript-preview") { self.store.recordings[index].segments = [] }
                 self.store.processingID = id
                 self.store.processingStartedAt = Date().addingTimeInterval(args.contains("--polishing-preview") ? -323 : -83)
                 self.store.updateProgress(.init(stage: args.contains("--polishing-preview") ? .correction : .transcription,
-                    detail: args.contains("--polishing-preview") ? "앞뒤 맥락을 확인하고 있어요. 교정이 끝나면 전사문을 보여드립니다." : "녹음 중 처리한 구간은 이어서 사용합니다.",
+                    detail: args.contains("--polishing-preview") ? "강의 전체의 맥락을 살펴 인식 오류와 띄어쓰기를 다듬습니다." : "저장된 음성을 텍스트로 옮깁니다. 이미 처리한 구간은 이어서 사용해요.",
                     completed: args.contains("--polishing-preview") ? nil : 2460, total: args.contains("--polishing-preview") ? nil : 4500,
                     unit: args.contains("--polishing-preview") ? .sentences : .audio,
                     estimatedDuration: args.contains("--polishing-preview") ? 300 : nil), for: id)
-                self.store.processingStepStartedUptime = ProcessInfo.processInfo.systemUptime - 240
-                if args.contains("--polishing-preview") { self.store.processingCompletedSteps = [.transcription] }
+                if args.contains("--polishing-preview") {
+                    self.store.processingCompletedSteps = [.transcription]
+                    self.store.processingEstimateStartedUptime = ProcessInfo.processInfo.systemUptime - (args.contains("--overrun-preview") ? 420 : 180)
+                }
+                if args.contains("--download-preview") {
+                    self.store.updateProgress(.init(stage: .speechPreparation,
+                        detail: "처음 사용하는 언어 모델을 다운로드합니다. 녹음은 보관되어 있습니다.",
+                        completed: 0.42, total: 1, unit: .download), for: id)
+                }
+                if args.contains("--summary-preview") {
+                    self.store.processingSummaryOnly = args.contains("--summary-only-preview")
+                    self.store.processingCompletedSteps = self.store.processingSummaryOnly ? [] : [.transcription, .correction]
+                    self.store.updateProgress(.init(stage: .analysis, detail: "교수가 강조한 내용과 시험 안내를 원문에서 확인합니다."), for: id)
+                    if self.store.processingSummaryOnly { self.store.processingCompletedSteps = [] }
+                }
+                if args.contains("--queued-preview") {
+                    self.store.queue = [id]
+                    self.store.recordings[index].status = .queued
+                    self.store.recordings[index].work = .init(kind: .transcription)
+                    self.store.processingID = UUID()
+                    self.store.processingSummaryOnly = true
+                    self.store.processingCompletedSteps = [.transcription, .correction]
+                }
             }
             if args.contains("--interrupted-preview") || args.contains("--sleep-preview"),
                let id = self.store.selectedID, let index = self.store.recordings.firstIndex(where: { $0.id == id }) {

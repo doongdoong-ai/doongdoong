@@ -417,44 +417,49 @@ struct RecordingDetailView: View {
 
     private var emptyTranscript: some View {
         let waiting = store.queue.contains(recording.id)
-        return VStack(spacing: 18) {
-            Spacer()
-            if recording.status.isProcessing || waiting || store.isFinalizing(recording.id) {
-                ProcessingProgressView(store: store, recordingID: recording.id)
-                    .padding(.horizontal, 30)
-            } else if recording.work?.state == .interrupted {
-                Image(systemName: "waveform").font(.system(size: 36, weight: .ultraLight)).foregroundStyle(SoriTheme.secondary)
-                Text(recording.work?.kind == .recording ? "저장된 음성을 다시 들을 수 있어요" : "교정이 끝나면 전사문을 보여드립니다")
-                    .font(.system(size: 18, weight: .medium))
-                Text("녹음 파일은 보관되어 있습니다.")
-                    .font(.system(size: 14)).foregroundStyle(SoriTheme.secondary).multilineTextAlignment(.center)
-            } else if recording.status == .noSpeech {
-                Text("감지된 음성이 없어요")
-                    .font(.system(size: 20, weight: .medium)).multilineTextAlignment(.center)
-                Text("녹음 파일은 저장되어 있어요. 재생해서 확인할 수 있습니다.")
-                    .font(.system(size: 14)).foregroundStyle(SoriTheme.secondary).multilineTextAlignment(.center).lineSpacing(7)
-                if store.settings.transcriptionReady {
-                    Button("다시 시도") { store.enqueue(recording.id) }
-                        .font(.system(size: 14)).buttonStyle(.plain).foregroundStyle(SoriTheme.secondary).padding(.top, 7)
-                        .disabled(!store.canTranscribe(recording.id))
-                } else {
-                    Button("AI 설정") { NotificationCenter.default.post(name: Notification.Name("BungBungiShowSettings"), object: nil) }
-                        .font(.system(size: 14)).buttonStyle(.plain).foregroundStyle(SoriTheme.secondary).padding(.top, 7)
-                }
-            } else {
-                Image(systemName: "text.bubble").font(.system(size: 42, weight: .ultraLight)).foregroundStyle(SoriTheme.accent.opacity(0.8))
-                Text("아직 정리된 내용이 없습니다").font(.system(size: 22, weight: .medium))
-                Text(store.settings.transcriptionReady ? "AI가 녹음을 정리해 드려요." : store.settings.transcriptionUnavailableReason)
-                    .font(.system(size: 14)).foregroundStyle(SoriTheme.secondary).multilineTextAlignment(.center).lineSpacing(7)
-                if store.settings.transcriptionReady {
-                    Button("AI 정리 시작") { store.enqueue(recording.id) }.buttonStyle(PrimaryButtonStyle()).padding(.top, 7).disabled(!store.canTranscribe(recording.id))
-                } else {
-                    Button("AI 설정") { NotificationCenter.default.post(name: Notification.Name("BungBungiShowSettings"), object: nil) }
-                        .buttonStyle(.bordered).padding(.top, 7)
-                }
+        let processing = recording.status.isProcessing || waiting || store.isFinalizing(recording.id)
+        return GeometryReader { geometry in
+            ScrollView {
+                VStack(spacing: processing ? 0 : 18) {
+                    Spacer(minLength: 0)
+                    if processing {
+                        ProcessingProgressView(store: store, recordingID: recording.id, condensed: geometry.size.height < 440)
+                            .padding(.horizontal, 30)
+                    } else if recording.work?.state == .interrupted {
+                        Image(systemName: "waveform").font(.system(size: 36, weight: .ultraLight)).foregroundStyle(SoriTheme.secondary)
+                        Text(recording.work?.kind == .recording ? "저장된 음성을 다시 들을 수 있어요" : "교정이 끝나면 전사문을 보여드립니다")
+                            .font(.system(size: 18, weight: .medium))
+                        Text("녹음 파일은 보관되어 있습니다.")
+                            .font(.system(size: 14)).foregroundStyle(SoriTheme.secondary).multilineTextAlignment(.center)
+                    } else if recording.status == .noSpeech {
+                        Text("감지된 음성이 없어요")
+                            .font(.system(size: 20, weight: .medium)).multilineTextAlignment(.center)
+                        Text("녹음 파일은 저장되어 있어요. 재생해서 확인할 수 있습니다.")
+                            .font(.system(size: 14)).foregroundStyle(SoriTheme.secondary).multilineTextAlignment(.center).lineSpacing(7)
+                        if store.settings.transcriptionReady {
+                            Button("다시 시도") { store.enqueue(recording.id) }
+                                .font(.system(size: 14)).buttonStyle(.plain).foregroundStyle(SoriTheme.secondary).padding(.top, 7)
+                                .disabled(!store.canTranscribe(recording.id))
+                        } else {
+                            Button("AI 설정") { NotificationCenter.default.post(name: Notification.Name("BungBungiShowSettings"), object: nil) }
+                                .font(.system(size: 14)).buttonStyle(.plain).foregroundStyle(SoriTheme.secondary).padding(.top, 7)
+                        }
+                    } else {
+                        Image(systemName: "text.bubble").font(.system(size: 42, weight: .ultraLight)).foregroundStyle(SoriTheme.accent.opacity(0.8))
+                        Text("아직 정리된 내용이 없습니다").font(.system(size: 22, weight: .medium))
+                        Text(store.settings.transcriptionReady ? "AI가 녹음을 정리해 드려요." : store.settings.transcriptionUnavailableReason)
+                            .font(.system(size: 14)).foregroundStyle(SoriTheme.secondary).multilineTextAlignment(.center).lineSpacing(7)
+                        if store.settings.transcriptionReady {
+                            Button("AI 정리 시작") { store.enqueue(recording.id) }.buttonStyle(PrimaryButtonStyle()).padding(.top, 7).disabled(!store.canTranscribe(recording.id))
+                        } else {
+                            Button("AI 설정") { NotificationCenter.default.post(name: Notification.Name("BungBungiShowSettings"), object: nil) }
+                                .buttonStyle(.bordered).padding(.top, 7)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                }.frame(maxWidth: .infinity, minHeight: geometry.size.height).padding(.horizontal, 28)
             }
-            Spacer()
-        }.frame(maxWidth: .infinity).padding(.horizontal, 28)
+        }
     }
 
     private var recordingState: some View {
