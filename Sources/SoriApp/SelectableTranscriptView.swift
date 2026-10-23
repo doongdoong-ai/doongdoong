@@ -54,6 +54,11 @@ struct TranscriptDocument {
     }
 }
 
+enum TranscriptScrollDestination: Equatable {
+    case above, below
+    var symbol: String { self == .above ? "arrow.up" : "arrow.down" }
+}
+
 struct SelectableTranscriptView: NSViewRepresentable {
     let recordingID: UUID
     let segments: [TranscriptSegment]
@@ -76,6 +81,7 @@ struct SelectableTranscriptView: NSViewRepresentable {
     let repeatSegment: (TranscriptSegment) -> Void
     let bookmark: (TranscriptSegment) -> Void
     let copy: (TranscriptSegment) -> Void
+    var playbackPositionChanged: (TranscriptScrollDestination?) -> Void = { _ in }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -104,6 +110,7 @@ struct SelectableTranscriptView: NSViewRepresentable {
         text.delegate = coordinator
         scroll.documentView = text
         coordinator.textView = text
+        coordinator.observe(scroll)
         return scroll
     }
 
@@ -111,13 +118,81 @@ struct SelectableTranscriptView: NSViewRepresentable {
         context.coordinator.update(self, scroll: scroll)
     }
 
+    static func dismantleNSView(_ scroll: TranscriptScrollView, coordinator: Coordinator) {
+        coordinator.stopObserving()
+    }
+
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: SelectableTranscriptView
         weak var textView: TranscriptTextView?
         var document: TranscriptDocument?
         private var previous: SelectableTranscriptView?
+        private weak var scrollView: TranscriptScrollView?
+        private var positionUpdatePending = false
+        private var reportedPosition: TranscriptScrollDestination?
 
         init(_ parent: SelectableTranscriptView) { self.parent = parent }
+
+        func observe(_ scroll: TranscriptScrollView) {
+            scrollView = scroll
+            scroll.contentView.postsBoundsChangedNotifications = true
+            NotificationCenter.default.addObserver(self, selector: #selector(viewportChanged),
+                name: NSView.boundsDidChangeNotification, object: scroll.contentView)
+            NotificationCenter.default.addObserver(self, selector: #selector(manualScrollStarted),
+                name: NSScrollView.willStartLiveScrollNotification, object: scroll)
+            scroll.viewportChanged = { [weak self] in self?.schedulePositionUpdate() }
+            textView?.manualScroll = { [weak scroll] in scroll?.followPaused = true }
+        }
+
+        func stopObserving() {
+            NotificationCenter.default.removeObserver(self)
+            scrollView?.stopPlaybackScroll()
+            scrollView?.viewportChanged = nil
+            textView?.manualScroll = nil
+            scrollView = nil
+        }
+
+        @objc private func viewportChanged() { schedulePositionUpdate() }
+        @objc private func manualScrollStarted() { scrollView?.followPaused = true }
+
+        // Bounds notifications also arrive during SwiftUI updates and text layout.
+        // Coalesce them and publish only after the current update has finished.
+        private func schedulePositionUpdate() {
+            guard !positionUpdatePending else { return }
+            positionUpdatePending = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.positionUpdatePending = false
+                guard self.scrollView != nil else { return }
+                let position = self.playbackScrollDestination
+                guard position != self.reportedPosition else { return }
+                self.reportedPosition = position
+                self.parent.playbackPositionChanged(position)
+            }
+        }
+
+        private var playbackID: Int? {
+            parent.activeID ?? parent.segments.last(where: { $0.start <= parent.playbackTime })?.id ?? parent.segments.first?.id
+        }
+
+        var playbackScrollDestination: TranscriptScrollDestination? {
+            guard parent.canPlay, parent.query.isEmpty, let scrollView, !scrollView.isFollowingPlayback,
+                  let rect = textRect(for: playbackID), scrollView.contentSize.height > 24 else { return nil }
+            let viewport = scrollView.documentVisibleRect.insetBy(dx: 0, dy: 8)
+            // A long sentence may span the viewport: a visible line is enough.
+            if rect.intersection(viewport).height >= min(24, rect.height) { return nil }
+            return rect.midY < viewport.midY ? .above : .below
+        }
+
+        private func textRect(for id: Int?) -> NSRect? {
+            guard let textView, let entry = document?.entries.first(where: { $0.segment.id == id }),
+                  let layout = textView.layoutManager, let container = textView.textContainer else { return nil }
+            layout.ensureLayout(for: container)
+            let range = entry.textRange.length > 0 ? entry.textRange : entry.range
+            let glyphs = layout.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+            return layout.boundingRect(forGlyphRange: glyphs, in: container)
+                .offsetBy(dx: textView.textContainerOrigin.x, dy: textView.textContainerOrigin.y)
+        }
 
         func update(_ value: SelectableTranscriptView, scroll: TranscriptScrollView) {
             parent = value
@@ -125,6 +200,9 @@ struct SelectableTranscriptView: NSViewRepresentable {
             let changedRecording = previous?.recordingID != value.recordingID
             let contentChanged = changedRecording || previous?.segments != value.segments || previous?.original != value.original
             let rebuilt = contentChanged || previous?.textSize != value.textSize || previous?.query != value.query
+            if rebuilt || !value.followPlayback || !value.query.isEmpty || !value.canPlay {
+                scroll.stopPlaybackScroll()
+            }
             if changedRecording { scroll.followPaused = false }
             if rebuilt {
                 let selection = textView.selectedRanges
@@ -139,6 +217,8 @@ struct SelectableTranscriptView: NSViewRepresentable {
                     textView.selectedRanges = valid.isEmpty ? [NSValue(range: NSRange(location: 0, length: 0))] : valid
                     scroll.contentView.scroll(to: origin)
                 }
+                // Resolve the viewport width/insets before the first follow scroll.
+                scroll.layoutSubtreeIfNeeded()
             }
             textView.togglePlayback = value.canPlay ? value.togglePlayback : nil
             textView.playSentence = value.canPlay ? { [weak self] index in
@@ -163,9 +243,13 @@ struct SelectableTranscriptView: NSViewRepresentable {
                 && (changedRecording || previous?.activeID != value.activeID || previous?.followPlayback == false)
             if requestedSearch { reveal(value.selectedSearchID) }
             else if requestedPlayback || follows {
-                reveal(value.activeID ?? value.segments.last(where: { $0.start <= value.playbackTime })?.id ?? value.segments.first?.id)
+                if requestedPlayback, previous != nil {
+                    textView.setSelectedRange(NSRange(location: textView.selectedRange().location, length: 0))
+                }
+                reveal(playbackID, centered: true, animated: previous != nil && !changedRecording)
             }
             previous = value
+            schedulePositionUpdate()
         }
 
         private func applyHighlights() {
@@ -186,9 +270,22 @@ struct SelectableTranscriptView: NSViewRepresentable {
             storage.endEditing()
         }
 
-        private func reveal(_ id: Int?) {
+        private func reveal(_ id: Int?, centered: Bool = false, animated: Bool = false) {
             guard let textView, let entry = document?.entries.first(where: { $0.segment.id == id }) else { return }
-            textView.scrollRangeToVisible(entry.range)
+            guard centered, let scrollView, let rect = textRect(for: id) else {
+                textView.scrollRangeToVisible(entry.range)
+                return
+            }
+            let clip = scrollView.contentView
+            let height = clip.bounds.height
+            let desiredY = rect.height > height * 0.7 ? rect.minY - 24 : rect.midY - height * 0.4
+            let y = max(0, min(desiredY, textView.bounds.height - height))
+            let destination = NSPoint(x: clip.bounds.origin.x, y: y)
+            scrollView.scrollToPlayback(destination, animated: animated && scrollView.window?.isVisible == true)
+        }
+
+        func textViewDidChangeSelection(_ notification: Notification) {
+            if textView?.hasSelection == true { scrollView?.followPaused = true }
         }
 
         func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
@@ -226,11 +323,13 @@ final class TranscriptTextView: NSTextView {
     var sentenceMenu: ((Int) -> [NSMenuItem])?
     var togglePlayback: (() -> Void)?
     var playSentence: ((Int) -> Void)?
+    var manualScroll: (() -> Void)?
     var playableRanges: [NSRange] = []
     private(set) var isSelecting = false
     var hasSelection: Bool { selectedRanges.contains { $0.rangeValue.length > 0 } }
 
     override func keyDown(with event: NSEvent) {
+        if [115, 116, 119, 121].contains(event.keyCode) { manualScroll?() }
         if event.keyCode == 49, event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty,
            !hasSelection, let togglePlayback {
             togglePlayback()
@@ -238,6 +337,7 @@ final class TranscriptTextView: NSTextView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        manualScroll?()
         isSelecting = true
         defer { isSelecting = false }
         guard let index = playableCharacterIndex(at: convert(event.locationInWindow, from: nil)),
@@ -308,7 +408,48 @@ final class TranscriptTextView: NSTextView {
 }
 
 final class TranscriptScrollView: NSScrollView {
-    var followPaused = false
+    var followPaused = false { didSet { if followPaused { stopPlaybackScroll() } } }
+    var viewportChanged: (() -> Void)?
+    private var playbackAnimation: TranscriptScrollAnimation?
+    private var viewportSize: NSSize = .zero
+    var isFollowingPlayback: Bool { playbackAnimation != nil }
+
+    func scrollToPlayback(_ destination: NSPoint, animated: Bool) {
+        stopPlaybackScroll()
+        let origin = contentView.bounds.origin
+        guard animated, abs(destination.y - origin.y) > 1 else {
+            contentView.scroll(to: destination)
+            reflectScrolledClipView(contentView)
+            return
+        }
+        // Use an owned AppKit animation so a wheel gesture, scrollbar drag or
+        // text selection can stop it immediately at the currently visible point.
+        let distance = abs(destination.y - origin.y) / max(1, contentSize.height)
+        let animation = TranscriptScrollAnimation(duration: 0.38 + min(0.22, Double(distance) * 0.12), animationCurve: .easeInOut)
+        animation.animationBlockingMode = .nonblocking
+        animation.frameRate = 60
+        animation.update = { [weak self] fraction in
+            guard let self else { return }
+            self.contentView.scroll(to: NSPoint(x: origin.x + (destination.x - origin.x) * fraction,
+                                               y: origin.y + (destination.y - origin.y) * fraction))
+            self.reflectScrolledClipView(self.contentView)
+        }
+        animation.finished = { [weak self] in
+            self?.playbackAnimation = nil
+            self?.viewportChanged?()
+        }
+        playbackAnimation = animation
+        animation.start()
+        viewportChanged?()
+    }
+
+    func stopPlaybackScroll() {
+        guard let animation = playbackAnimation else { return }
+        playbackAnimation = nil
+        animation.update = nil; animation.finished = nil
+        animation.stop()
+        viewportChanged?()
+    }
 
     override func scrollWheel(with event: NSEvent) {
         if event.scrollingDeltaX != 0 || event.scrollingDeltaY != 0 { followPaused = true }
@@ -317,9 +458,22 @@ final class TranscriptScrollView: NSScrollView {
 
     override func layout() {
         super.layout()
+        if viewportSize != contentSize { stopPlaybackScroll(); viewportSize = contentSize }
         guard let text = documentView as? NSTextView else { return }
         let inset = NSSize(width: max(38, (contentSize.width - 720) / 2), height: 30)
         if text.textContainerInset != inset { text.textContainerInset = inset }
+        viewportChanged?()
+    }
+}
+
+private final class TranscriptScrollAnimation: NSAnimation {
+    var update: ((CGFloat) -> Void)?
+    var finished: (() -> Void)?
+    override var currentProgress: NSAnimation.Progress {
+        didSet {
+            update?(CGFloat(currentValue))
+            if currentProgress >= 1 { finished?() }
+        }
     }
 }
 
