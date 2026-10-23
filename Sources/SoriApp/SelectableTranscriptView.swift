@@ -94,6 +94,12 @@ struct SelectableTranscriptView: NSViewRepresentable {
         scroll.hasVerticalScroller = true
         scroll.hasHorizontalScroller = false
         scroll.drawsBackground = false
+        // SwiftUI places this reader below its own header. AppKit must not add
+        // late titlebar/ruler insets while a playback scroll is already moving.
+        scroll.automaticallyAdjustsContentInsets = false
+        scroll.contentInsets = .init()
+        scroll.contentView.automaticallyAdjustsContentInsets = false
+        scroll.contentView.contentInsets = .init()
         let text = TranscriptTextView(frame: scroll.bounds)
         text.isEditable = false; text.isSelectable = true
         text.isRichText = true; text.drawsBackground = false
@@ -416,6 +422,7 @@ final class TranscriptScrollView: NSScrollView {
 
     func scrollToPlayback(_ destination: NSPoint, animated: Bool) {
         stopPlaybackScroll()
+        layoutSubtreeIfNeeded()
         let origin = contentView.bounds.origin
         guard animated, abs(destination.y - origin.y) > 1 else {
             contentView.scroll(to: destination)

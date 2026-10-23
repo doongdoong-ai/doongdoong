@@ -22,10 +22,11 @@ import SoriCore
               playbackPositionChanged: position)
     }
 
-    private func mount(_ value: SelectableTranscriptView) -> (NSWindow, TranscriptScrollView, SelectableTranscriptView.Coordinator) {
+    private func mount(_ value: SelectableTranscriptView, scrollerStyle: NSScroller.Style? = nil) -> (NSWindow, TranscriptScrollView, SelectableTranscriptView.Coordinator) {
         _ = NSApplication.shared
         let coordinator = value.makeCoordinator()
         let scroll = value.makeScrollView(coordinator: coordinator)
+        if let scrollerStyle { scroll.scrollerStyle = scrollerStyle }
         let window = NSWindow(contentRect: NSRect(x: -3000, y: -3000, width: 620, height: 340),
                               styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
@@ -108,7 +109,7 @@ import SoriCore
     }
 
     func testAnimatedFollowMovesThroughIntermediatePositionsAndFinishesAtTarget() async {
-        let (window, scroll, coordinator) = mount(view())
+        let (window, scroll, coordinator) = mount(view(), scrollerStyle: .legacy)
         defer { coordinator.stopObserving(); window.close() }
         let origin = scroll.contentView.bounds.origin
         let destination = NSPoint(x: origin.x, y: origin.y + 240)
