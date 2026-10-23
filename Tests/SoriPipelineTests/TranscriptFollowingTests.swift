@@ -128,7 +128,11 @@ import SoriCore
         XCTAssertNil(coordinator.playbackScrollDestination, "자동 이동 중에는 복귀 버튼이 깜빡이지 않음")
         await fulfillment(of: [finished], timeout: 3)
         XCTAssertGreaterThan(positions.filter { $0 > origin.y + 1 && $0 < destination.y - 1 }.count, 2)
-        XCTAssertTrue(zip(positions, positions.dropFirst()).allSatisfy { $0 <= $1 + 0.1 })
+        // AppKit aligns clip bounds to backing pixels; fractional positions can
+        // differ by one pixel between a layout pass and an animation tick.
+        let pixel = 1 / window.backingScaleFactor
+        XCTAssertTrue(zip(positions, positions.dropFirst()).allSatisfy { $0 <= $1 + pixel + 0.01 },
+                      "역방향 이동이 한 픽셀을 넘지 않아야 함: \(positions)")
         XCTAssertEqual(scroll.contentView.bounds.origin.y, destination.y, accuracy: 1)
     }
 
