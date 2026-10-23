@@ -150,6 +150,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                 }
             }
             SummaryPreview.configure(store: self.store, arguments: args)
+            TranscriptPreview.configure(store: self.store, arguments: args)
             let settings = args.contains("--settings-preview") || args.contains("--providers-preview")
             let search = args.contains("--search-preview") || args.contains("--empty-search-preview")
             if search { self.store.transcriptSearch = args.contains("--empty-search-preview") ? "일치하지 않는 검색어" : "녹음" }
@@ -161,6 +162,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             view.frame = NSRect(origin: .zero, size: size)
             self.snapshotView = view
             view.layoutSubtreeIfNeeded()
+            TranscriptPreview.scrollAway(in: view, arguments: args)
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
                 view.layoutSubtreeIfNeeded()
                 guard let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size.width * 2), pixelsHigh: Int(size.height * 2), bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { exit(1) }

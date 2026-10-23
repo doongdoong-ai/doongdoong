@@ -16,6 +16,7 @@ struct RecordingDetailView: View {
     @State private var textSize: Double = 22
     @State private var scrollRequest = 0
     @State private var searchScrollRequest = 0
+    @State private var playbackScrollDestination: TranscriptScrollDestination?
     @FocusState private var searchFocused: Bool
 
     init(store: AppStore, recording: Recording, transcriptVisible: Bool = false, searchVisible: Bool = false) {
@@ -105,6 +106,7 @@ struct RecordingDetailView: View {
             searchFocusRequested = false
             selectedSearchID = nil
             searchFocused = false
+            playbackScrollDestination = nil
         }
         .onChange(of: matchingIDs, initial: true) { _, ids in
             if !ids.contains(selectedSearchID ?? -1) { selectedSearchID = ids.first }
@@ -250,7 +252,32 @@ struct RecordingDetailView: View {
                 followPlayback: store.followPlayback, scrollRequest: scrollRequest,
                 searchScrollRequest: searchScrollRequest, canPlay: canPlay, canEdit: canEditTranscript,
                 play: play, togglePlayback: { store.audio.togglePlayback() }, isLooping: isLooping, isBookmarked: isBookmarked,
-                edit: edit, repeatSegment: toggleLoop, bookmark: addBookmark, copy: copy)
+                edit: edit, repeatSegment: toggleLoop, bookmark: addBookmark, copy: copy,
+                playbackPositionChanged: { playbackScrollDestination = $0 })
+                .overlay(alignment: .bottom) {
+                    if canPlay, query.isEmpty, let destination = playbackScrollDestination {
+                        Button {
+                            store.followPlayback = true
+                            scrollRequest += 1
+                        } label: {
+                            Label("현재 위치로", systemImage: destination.symbol)
+                                .font(.system(size: 13, weight: .medium))
+                                .padding(.horizontal, 16).padding(.vertical, 11)
+                                .foregroundStyle(SoriTheme.ink)
+                                .background(.regularMaterial, in: Capsule())
+                                .overlay(Capsule().strokeBorder(SoriTheme.line))
+                                .shadow(color: .black.opacity(0.1), radius: 10, y: 3)
+                                .contentShape(Capsule())
+                        }.buttonStyle(.plain)
+                            .help("재생 위치로 돌아가 문장 따라가기")
+                            .accessibilityLabel("현재 재생 위치로 이동")
+                            .accessibilityHint("재생 시간을 유지하고 문장 따라가기를 다시 시작합니다.")
+                            .padding(.bottom, 18)
+                            .transition(.opacity)
+                    }
+                }
+                .animation(BungBungiApp.runsWithoutUI ? nil : .easeOut(duration: 0.16), value: playbackScrollDestination)
+                .onDisappear { playbackScrollDestination = nil }
         }
     }
 

@@ -41,6 +41,8 @@ SCENARIOS = (
     ("evidence-minimum", ("--evidence-preview", "--minimum-window"), True, (2000, 1340)),
     ("welcome", (), False, (2560, 1640)),
     ("transcript", ("--transcript-preview",), True, (2560, 1640)),
+    ("follow-return", ("--transcript-preview", "--follow-return-preview"), True, (2560, 1640)),
+    ("follow-above", ("--transcript-preview", "--follow-return-preview", "--follow-above-preview", "--minimum-window"), True, (2000, 1340)),
     ("search", ("--transcript-preview", "--search-preview"), True, (2560, 1640)),
     ("empty-search", ("--minimum-window", "--transcript-preview", "--empty-search-preview"), True, (2000, 1340)),
     ("processing", ("--processing-preview",), True, (2560, 1640)),
