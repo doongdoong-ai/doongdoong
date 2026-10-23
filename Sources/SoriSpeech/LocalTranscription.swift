@@ -36,39 +36,61 @@ public enum LocalTranscription {
 
 @MainActor
 public final class LocalRecordingTranscription {
+    // Scheduling is separate from the core's small, resumable decode chunks.
+    static let batchFrames: Int64 = 25 * 60 * 16_000
+    private let audio: URL
     private let session: TranscriptionSession
     private var worker: Task<Void, Never>?
     private var stopping = false
+    private var processing = false
+    private var nextBatchFrame = batchFrames
     public var onIssue: ((String) -> Void)?
 
-    public init(audio: URL, directory: URL, configuration: SpeechConfiguration) {
-        session = TranscriptionSession(audio: audio, directory: directory, configuration: configuration, recognizer: LocalTranscription.engine)
+    public init(audio: URL, directory: URL, configuration: SpeechConfiguration,
+                recognizer: any SpeechRecognizer = LocalTranscription.engine) {
+        self.audio = audio
+        session = TranscriptionSession(audio: audio, directory: directory, configuration: configuration, recognizer: recognizer)
     }
 
     public func start() {
         guard worker == nil else { return }
         worker = Task { [weak self] in
             guard let self else { return }
-            var nextAttempt = Date.distantPast
+            var nextAttempt = ContinuousClock.now
             while !Task.isCancelled && !self.stopping {
-                if Date() >= nextAttempt {
-                    do { try await self.session.processAvailable(final: false) }
+                if ContinuousClock.now >= nextAttempt {
+                    do { try await self.processScheduledBatch() }
                     catch {
                         if Task.isCancelled { break }
-                        nextAttempt = Date().addingTimeInterval(30)
+                        nextAttempt = ContinuousClock.now.advanced(by: .seconds(30))
                         self.onIssue?("녹음은 계속 저장됩니다. 음성 인식을 잠시 후 다시 시도합니다.")
                     }
                 }
+                if self.stopping { break }
                 do { try await Task.sleep(for: .seconds(2)) } catch { break }
             }
         }
     }
 
-    /// Normal stop drains an in-flight chunk, retaining the resident engine.
-    /// The app's final pipeline reuses checkpoints and processes only the tail.
+    /// Gate on saved PCM, not wall time: pauses do not count toward 25 minutes.
+    /// On resume a new session may catch up immediately; core checkpoints avoid
+    /// decoding completed chunks again. Advance only after a successful batch.
+    func processScheduledBatch() async throws {
+        guard !stopping, !processing else { return }
+        try Task.checkCancellation()
+        let frames = try RecordingPCM.header(audio, closed: false).frames
+        guard frames >= nextBatchFrame else { return }
+        processing = true; defer { processing = false }
+        try await session.processAvailable(final: false)
+        nextBatchFrame = (frames / Self.batchFrames + 1) * Self.batchFrames
+    }
+
+    /// Stop idle polling immediately; normal stop drains an in-flight batch.
+    /// The final pipeline reuses checkpoints and processes the tail without
+    /// waiting for another 25-minute boundary. Sleep cancels inference as well.
     public func finish(cancel: Bool = false) async {
         stopping = true
-        if cancel { worker?.cancel() }
+        if cancel || !processing { worker?.cancel() }
         await worker?.value; worker = nil
     }
 }
