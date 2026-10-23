@@ -80,6 +80,7 @@ struct SettingsView: View {
                     .overlay(alignment: .top) { Rectangle().fill(SoriTheme.line).frame(height: 1) }
             }.background(SoriTheme.paper)
         }.font(.system(size: 14)).foregroundStyle(SoriTheme.ink)
+            .focusEffectDisabled()
             .frame(minWidth: Self.minimumSize.width, minHeight: Self.minimumSize.height)
             .onAppear {
                 if !store.settings.preparingSpeech { store.settings.refreshSpeechAvailability() }
