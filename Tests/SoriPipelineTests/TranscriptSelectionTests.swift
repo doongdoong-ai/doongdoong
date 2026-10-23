@@ -12,9 +12,10 @@ import SoriCore
     ]
 
     private func view(active: Int? = nil, original: Bool = false, canPlay: Bool = true,
+                      query: String = "", selected: Int? = nil,
                       play: @escaping (TranscriptSegment) -> Void = { _ in }) -> SelectableTranscriptView {
         SelectableTranscriptView(recordingID: recordingID, segments: segments, original: original,
-                                 textSize: 22, query: "", selectedSearchID: nil, activeID: active, playbackTime: 1,
+                                 textSize: 22, query: query, selectedSearchID: selected, activeID: active, playbackTime: 1,
                                  followPlayback: true, scrollRequest: 0, searchScrollRequest: 0,
                                  canPlay: canPlay, canEdit: true, play: play, togglePlayback: {}, isLooping: { _ in false },
                                  isBookmarked: { _ in false }, edit: { _ in },
@@ -66,12 +67,100 @@ import SoriCore
         let range = try XCTUnwrap(coordinator.document?.entries.first?.textRange)
         text.setSelectedRange(range)
         let origin = scroll.contentView.bounds.origin
+        var documentEdits = 0
+        let observer = NotificationCenter.default.addObserver(forName: NSTextStorage.didProcessEditingNotification,
+            object: text.textStorage, queue: .main) { _ in documentEdits += 1 }
+        defer { NotificationCenter.default.removeObserver(observer) }
         coordinator.update(view(active: 42), scroll: scroll)
         XCTAssertEqual(text.selectedRange(), range)
         XCTAssertEqual(scroll.contentView.bounds.origin, origin)
         XCTAssertEqual((text.string as NSString).substring(with: text.selectedRange()), segments[0].text)
         let active = try XCTUnwrap(coordinator.document?.entries.last?.textRange)
-        XCTAssertNotNil(text.textStorage?.attribute(.backgroundColor, at: active.location, effectiveRange: nil))
+        XCTAssertNotNil(text.layoutManager?.temporaryAttribute(.backgroundColor, atCharacterIndex: active.location, effectiveRange: nil))
+        XCTAssertNil(text.layoutManager?.temporaryAttribute(.backgroundColor, atCharacterIndex: range.location, effectiveRange: nil))
+        XCTAssertEqual(documentEdits, 0, "Playback emphasis must not edit the document or invalidate its text layout")
+    }
+
+    func testSearchEmphasisSurvivesPlaybackChangesAndClearsWhenQueryIsRemoved() throws {
+        let initial = view(active: 7, query: "가격", selected: 7)
+        let coordinator = initial.makeCoordinator()
+        let scroll = initial.makeScrollView(coordinator: coordinator)
+        coordinator.update(initial, scroll: scroll)
+        let text = try XCTUnwrap(scroll.documentView as? TranscriptTextView)
+        let layout = try XCTUnwrap(text.layoutManager)
+        let entries = try XCTUnwrap(coordinator.document?.entries)
+        let matches = try XCTUnwrap(coordinator.document?.matches)
+        func color(_ index: Int) -> NSColor? {
+            layout.temporaryAttribute(.backgroundColor, atCharacterIndex: index, effectiveRange: nil) as? NSColor
+        }
+        XCTAssertEqual(color(matches[0].location), NSColor.systemYellow.withAlphaComponent(0.5))
+        XCTAssertEqual(color(matches[1].location), NSColor.systemYellow.withAlphaComponent(0.24))
+        coordinator.update(view(active: 42, query: "가격", selected: 7), scroll: scroll)
+        XCTAssertNil(color(entries[0].textRange.location))
+        XCTAssertEqual(color(matches[0].location), NSColor.systemYellow.withAlphaComponent(0.5))
+        XCTAssertEqual(color(matches[1].location), NSColor.systemYellow.withAlphaComponent(0.24))
+        coordinator.update(view(active: 42, query: "가격", selected: 42), scroll: scroll)
+        XCTAssertEqual(color(matches[0].location), NSColor.systemYellow.withAlphaComponent(0.24))
+        XCTAssertEqual(color(matches[1].location), NSColor.systemYellow.withAlphaComponent(0.5))
+        coordinator.update(view(active: 42), scroll: scroll)
+        XCTAssertNil(color(matches[0].location))
+        XCTAssertEqual(color(matches[1].location), NSColor(SoriTheme.accentSoft))
+        coordinator.update(view(), scroll: scroll)
+        XCTAssertNil(color(matches[1].location))
+        // Rebuilding with different UTF-16 lengths must not keep stale emphasis.
+        coordinator.update(view(active: 7, original: true, query: "가격", selected: 7), scroll: scroll)
+        let rebuiltMatch = try XCTUnwrap(coordinator.document?.matches.first)
+        XCTAssertEqual(color(rebuiltMatch.location), NSColor.systemYellow.withAlphaComponent(0.5))
+    }
+
+    func testViewportCursorRegionsMatchRenderedLinesAcrossLongParagraphsAndResize() throws {
+        let initial = view()
+        let coordinator = initial.makeCoordinator()
+        let scroll = initial.makeScrollView(coordinator: coordinator)
+        let window = NSWindow(contentRect: NSRect(x: -3000, y: -3000, width: 620, height: 340),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = scroll
+        defer { coordinator.stopObserving(); window.close() }
+        let text = try XCTUnwrap(scroll.documentView as? TranscriptTextView)
+        let fixture: [TranscriptSegment] = (0..<300).map { index in
+            let repetitions = index == 150 ? 40 : 2
+            let body = index == 149 ? "" : String(repeating: "강의 내용 👩‍💻 가격과 수요를 설명합니다. ", count: repetitions)
+            return TranscriptSegment(id: index, start: Double(index), end: Double(index + 1), text: body)
+        }
+        let document = TranscriptDocument(segments: fixture, original: false, size: 22, query: "")
+        text.textStorage?.setAttributedString(document.text)
+        text.playableRanges = document.entries.map(\.textRange)
+        let layout = try XCTUnwrap(text.layoutManager)
+        let container = try XCTUnwrap(text.textContainer)
+        for width in [620.0, 480.0] {
+            window.setContentSize(NSSize(width: width, height: 340))
+            scroll.layoutSubtreeIfNeeded()
+            layout.ensureLayout(for: container)
+            let longGlyphs = layout.glyphRange(forCharacterRange: document.entries[150].textRange, actualCharacterRange: nil)
+            let longRect = layout.boundingRect(forGlyphRange: longGlyphs, in: container)
+            for y in [0, longRect.midY + text.textContainerOrigin.y, text.bounds.height - scroll.contentSize.height] {
+                scroll.contentView.scroll(to: NSPoint(x: 0, y: y))
+                scroll.reflectScrolledClipView(scroll.contentView)
+                let regions = text.playableCursorRects
+                XCTAssertFalse(regions.isEmpty)
+                XCTAssertTrue(regions.allSatisfy { text.visibleRect.contains($0) })
+                let visible = text.visibleRect.offsetBy(dx: -text.textContainerOrigin.x, dy: -text.textContainerOrigin.y)
+                let glyphs = layout.glyphRange(forBoundingRect: visible, in: container)
+                for glyph in glyphs.location..<NSMaxRange(glyphs) {
+                    let character = layout.characterIndexForGlyph(at: glyph)
+                    let scalar = (text.string as NSString).substring(with: NSRange(location: character, length: 1))
+                    if scalar.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { continue }
+                    let rect = layout.boundingRect(forGlyphRange: NSRange(location: glyph, length: 1), in: container)
+                    let point = NSPoint(x: rect.midX + text.textContainerOrigin.x, y: rect.midY + text.textContainerOrigin.y)
+                    guard rect.width > 0, text.visibleRect.contains(point) else { continue }
+                    let isSentence = document.entries.contains { NSLocationInRange(character, $0.textRange) }
+                    XCTAssertEqual(regions.contains { $0.contains(point) }, isSentence,
+                                   "Visible sentence glyphs need pointer coverage; timestamps must retain their own link handling")
+                }
+            }
+        }
+        text.playableRanges = []
+        XCTAssertTrue(text.playableCursorRects.isEmpty)
     }
 
     func testHighlightCardHeadingAndSummaryCanBeSelectedAndCopiedTogether() throws {
