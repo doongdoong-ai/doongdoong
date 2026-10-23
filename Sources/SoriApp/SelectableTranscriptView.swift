@@ -94,6 +94,7 @@ struct SelectableTranscriptView: NSViewRepresentable {
         scroll.hasVerticalScroller = true
         scroll.hasHorizontalScroller = false
         scroll.drawsBackground = false
+        scroll.focusRingType = .none
         // SwiftUI places this reader below its own header. AppKit must not add
         // late titlebar/ruler insets while a playback scroll is already moving.
         scroll.automaticallyAdjustsContentInsets = false
@@ -101,6 +102,7 @@ struct SelectableTranscriptView: NSViewRepresentable {
         scroll.contentView.automaticallyAdjustsContentInsets = false
         scroll.contentView.contentInsets = .init()
         let text = TranscriptTextView(frame: scroll.bounds)
+        text.focusRingType = .none
         text.isEditable = false; text.isSelectable = true
         text.isRichText = true; text.drawsBackground = false
         text.isVerticallyResizable = true; text.isHorizontallyResizable = false
@@ -534,6 +536,7 @@ struct SelectableCardText: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSTextView {
         let view = NSTextView()
+        view.focusRingType = .none
         view.isEditable = false; view.isSelectable = true; view.isRichText = true
         view.drawsBackground = false; view.textContainerInset = .zero
         view.textContainer?.lineFragmentPadding = 0

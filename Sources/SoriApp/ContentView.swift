@@ -24,6 +24,8 @@ struct ContentView: View {
         }
         .background(SoriTheme.paper)
         .foregroundStyle(SoriTheme.ink)
+        // Keep keyboard focus without the system-accent halo on clicked regions.
+        .focusEffectDisabled()
         .sheet(isPresented: $store.showRecordingDestination) { RecordingDestinationView(store: store) }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("BungBungiFindLibrary"))) { _ in
             store.selectedProjectID = nil; store.favoritesOnly = false; store.focusMode = false

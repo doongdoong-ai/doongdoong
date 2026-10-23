@@ -53,6 +53,7 @@ struct RecordingDestinationView: View {
                     .disabled(selectedID == nil || !store.projects.contains(where: { $0.id == selectedID }) || store.isStartingRecording || store.audio.isRecording)
             }
         }.padding(30).frame(width: 460).background(SoriTheme.paper).foregroundStyle(SoriTheme.ink)
+            .focusEffectDisabled()
     }
 
     private func createFolder() {
