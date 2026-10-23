@@ -96,7 +96,7 @@ struct SidebarView: View {
             } label: {
                 Label(store.audio.isRecording ? "녹음 마치기" : (store.isFinalizingRecording ? "저장 중…" : "새 녹음"),
                       systemImage: store.audio.isRecording ? "stop.fill" : "plus")
-                    .font(.system(size: 14, weight: .medium)).frame(maxWidth: .infinity)
+                    .font(.system(size: 14, weight: .medium)).frame(maxWidth: .infinity).padding(.vertical, 6)
             }.buttonStyle(.borderedProminent).controlSize(.large).tint(store.audio.isRecording ? SoriTheme.recording : SoriTheme.ink)
                 .disabled(store.isStartingRecording || store.isFinalizingRecording || store.repository == nil)
                 .help(store.audio.isRecording ? "녹음 마치기 · ⌘R" : "저장할 폴더를 선택하고 새 녹음 · ⌘R")
@@ -144,9 +144,6 @@ struct SidebarView: View {
                 Button { store.importAudio() } label: {
                     Label(store.isImporting ? "가져오는 중…" : "파일 가져오기", systemImage: "square.and.arrow.down")
                 }.disabled(store.isImporting || store.repository == nil).help("오디오·동영상 파일 가져오기 · ⌘O")
-                Button { store.reveal() } label: {
-                    Label("저장 폴더 열기", systemImage: "folder")
-                }.help(store.root.path)
                 Button { NotificationCenter.default.post(name: Notification.Name("BungBungiShowSettings"), object: nil) } label: {
                     Label("설정", systemImage: "gearshape")
                 }.help("설정 열기 · ⌘,")
@@ -257,7 +254,6 @@ struct SidebarView: View {
     }
 
     @ViewBuilder private func projectMenu(_ project: Project) -> some View {
-        Button("Finder에서 열기", systemImage: "folder") { store.revealProject(project) }
         Button("이름 변경", systemImage: "pencil") { folderName = project.name; renaming = project }.disabled(store.busy)
         Divider()
         Button("빈 폴더 삭제", systemImage: "trash", role: .destructive) { store.deleteProject(project) }
@@ -509,7 +505,6 @@ struct RecordingMenu: View {
                 }.disabled(project.id == recording.projectID)
             }
         }.disabled(locked)
-        Button("Finder에서 보기", systemImage: "arrow.up.forward.square") { store.reveal(recording) }
         if !recording.segments.isEmpty {
             Button(recording.lectureHighlights == nil ? "핵심 요약 만들기" : "핵심 요약 다시 정리", systemImage: "text.book.closed") {
                 store.enqueue(recording.id, lectureOnly: true)
@@ -546,7 +541,7 @@ struct WelcomeView: View {
             }.font(.system(size: 14)).controlSize(.large)
             Text("녹음 시작 전 저장할 폴더를 선택합니다.").font(.system(size: 14)).foregroundStyle(SoriTheme.secondary)
             if !store.settings.transcriptionReady {
-                Button("AI 설정") { NotificationCenter.default.post(name: Notification.Name("BungBungiShowSettings"), object: nil) }
+                Button("음성 인식 설정") { NotificationCenter.default.post(name: Notification.Name("BungBungiShowSettings"), object: nil, userInfo: ["section": "speech"]) }
                     .font(.system(size: 14)).buttonStyle(.plain).foregroundStyle(SoriTheme.ink)
             }
             Button { Task { await store.addDemo() } } label: {

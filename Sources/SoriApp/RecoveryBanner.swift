@@ -30,7 +30,7 @@ struct RecoveryBanner: View {
                         Button("음성 다시 확인") { Task { await store.recoverRecordings() } }
                             .buttonStyle(.plain).foregroundStyle(SoriTheme.secondary).disabled(recovering)
                     } else if !recovering && !store.canResumeWork(recording.id) && !store.isPreparingForSleep && store.processingID != recording.id {
-                        Button("설정 확인") { NotificationCenter.default.post(name: Notification.Name("BungBungiShowSettings"), object: nil) }
+                        Button("설정 확인") { NotificationCenter.default.post(name: Notification.Name("BungBungiShowSettings"), object: nil, userInfo: ["section": store.settings.transcriptionReady ? "providers" : "speech"]) }
                             .buttonStyle(.plain).foregroundStyle(SoriTheme.secondary)
                     }
                     Spacer()
