@@ -136,6 +136,8 @@ struct SelectableTranscriptView: NSViewRepresentable {
         private weak var scrollView: TranscriptScrollView?
         private var positionUpdatePending = false
         private var reportedPosition: TranscriptScrollDestination?
+        private var highlightedPlaybackRange: NSRange?
+        private var highlightedSearchRange: NSRange?
 
         init(_ parent: SelectableTranscriptView) { self.parent = parent }
 
@@ -193,8 +195,8 @@ struct SelectableTranscriptView: NSViewRepresentable {
         private func textRect(for id: Int?) -> NSRect? {
             guard let textView, let entry = document?.entries.first(where: { $0.segment.id == id }),
                   let layout = textView.layoutManager, let container = textView.textContainer else { return nil }
-            layout.ensureLayout(for: container)
             let range = entry.textRange.length > 0 ? entry.textRange : entry.range
+            layout.ensureLayout(forCharacterRange: range)
             let glyphs = layout.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
             return layout.boundingRect(forGlyphRange: glyphs, in: container)
                 .offsetBy(dx: textView.textContainerOrigin.x, dy: textView.textContainerOrigin.y)
@@ -239,7 +241,7 @@ struct SelectableTranscriptView: NSViewRepresentable {
             }
             textView.sentenceMenu = { [weak self] index in self?.menu(at: index) ?? [] }
             if rebuilt || previous?.activeID != value.activeID || previous?.selectedSearchID != value.selectedSearchID {
-                applyHighlights()
+                applyHighlights(rebuilt: rebuilt)
             }
             let requestedPlayback = previous?.scrollRequest != value.scrollRequest
             let requestedSearch = !value.query.isEmpty && (rebuilt || previous?.selectedSearchID != value.selectedSearchID
@@ -258,22 +260,35 @@ struct SelectableTranscriptView: NSViewRepresentable {
             schedulePositionUpdate()
         }
 
-        private func applyHighlights() {
-            guard let document, let storage = textView?.textStorage else { return }
-            storage.beginEditing()
-            storage.removeAttribute(.backgroundColor, range: NSRange(location: 0, length: storage.length))
-            if let active = document.entries.first(where: { $0.segment.id == parent.activeID }) {
-                storage.addAttribute(.backgroundColor, value: NSColor(SoriTheme.accentSoft), range: active.textRange)
-            }
-            for match in document.matches {
-                storage.addAttribute(.backgroundColor, value: NSColor.systemYellow.withAlphaComponent(0.24), range: match)
-            }
-            if !parent.query.isEmpty, let selected = document.entries.first(where: { $0.segment.id == parent.selectedSearchID }) {
-                for match in document.matches where NSIntersectionRange(match, selected.textRange).length > 0 {
-                    storage.addAttribute(.backgroundColor, value: NSColor.systemYellow.withAlphaComponent(0.5), range: match)
+        private func applyHighlights(rebuilt: Bool) {
+            guard let document, let layout = textView?.layoutManager else { return }
+            let active = document.entries.first(where: { $0.segment.id == parent.activeID })?.textRange
+            let selected = parent.query.isEmpty ? nil
+                : document.entries.first(where: { $0.segment.id == parent.selectedSearchID })?.textRange
+            // Playback/search emphasis is display-only. Editing NSTextStorage
+            // here invalidates layout throughout a long lecture on every sentence.
+            let dirty = rebuilt ? [NSRange(location: 0, length: document.text.length)]
+                : [highlightedPlaybackRange, active, highlightedSearchRange, selected].compactMap { $0 }
+            for range in dirty where range.length > 0 {
+                layout.removeTemporaryAttribute(.backgroundColor, forCharacterRange: range)
+                if let active {
+                    let overlap = NSIntersectionRange(active, range)
+                    if overlap.length > 0 {
+                        layout.addTemporaryAttribute(.backgroundColor, value: NSColor(SoriTheme.accentSoft), forCharacterRange: overlap)
+                    }
+                }
+                // Search takes precedence over playback, including when the
+                // active sentence moves out of a selected search result.
+                for match in document.matches {
+                    let overlap = NSIntersectionRange(match, range)
+                    guard overlap.length > 0 else { continue }
+                    let isSelected = selected.map { NSIntersectionRange(match, $0).length > 0 } ?? false
+                    layout.addTemporaryAttribute(.backgroundColor,
+                        value: NSColor.systemYellow.withAlphaComponent(isSelected ? 0.5 : 0.24), forCharacterRange: overlap)
                 }
             }
-            storage.endEditing()
+            highlightedPlaybackRange = active
+            highlightedSearchRange = selected
         }
 
         private func reveal(_ id: Int?, centered: Bool = false, animated: Bool = false) {
@@ -371,27 +386,56 @@ final class TranscriptTextView: NSTextView {
     func playableCharacterIndex(at point: NSPoint) -> Int? {
         guard let layoutManager, let textContainer, !playableRanges.isEmpty else { return nil }
         let local = NSPoint(x: point.x - textContainerOrigin.x, y: point.y - textContainerOrigin.y)
-        layoutManager.ensureLayout(for: textContainer)
+        layoutManager.ensureLayout(forBoundingRect: NSRect(origin: local, size: NSSize(width: 1, height: 1)), in: textContainer)
         let glyph = layoutManager.glyphIndex(for: local, in: textContainer)
         guard glyph < layoutManager.numberOfGlyphs,
               layoutManager.boundingRect(forGlyphRange: NSRange(location: glyph, length: 1),
                                          in: textContainer).contains(local) else { return nil }
         let index = layoutManager.characterIndexForGlyph(at: glyph)
-        return playableRanges.contains(where: { NSLocationInRange(index, $0) }) ? index : nil
+        return playableRanges(intersecting: NSRange(location: index, length: 1)).isEmpty ? nil : index
     }
 
     override func resetCursorRects() {
         super.resetCursorRects()
-        guard let layoutManager, let textContainer else { return }
-        layoutManager.ensureLayout(for: textContainer)
-        for range in playableRanges {
-            let glyphs = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+        for rect in playableCursorRects { addCursorRect(rect, cursor: .pointingHand) }
+    }
+
+    // AppKit rebuilds cursor regions while scrolling. Limit both text layout
+    // and line enumeration to the viewport, regardless of lecture length.
+    var playableCursorRects: [NSRect] {
+        guard !playableRanges.isEmpty, let layoutManager, let textContainer else { return [] }
+        let viewport = visibleRect
+        guard !viewport.isEmpty else { return [] }
+        let origin = textContainerOrigin
+        let local = viewport.offsetBy(dx: -origin.x, dy: -origin.y)
+        layoutManager.ensureLayout(forBoundingRect: local, in: textContainer)
+        let visibleGlyphs = layoutManager.glyphRange(forBoundingRect: local, in: textContainer)
+        guard visibleGlyphs.length > 0 else { return [] }
+        let characters = layoutManager.characterRange(forGlyphRange: visibleGlyphs, actualGlyphRange: nil)
+        var rects: [NSRect] = []
+        for range in playableRanges(intersecting: characters) where range.length > 0 {
+            let glyphs = layoutManager.glyphRange(forCharacterRange: NSIntersectionRange(range, characters), actualCharacterRange: nil)
             layoutManager.enumerateEnclosingRects(forGlyphRange: glyphs, withinSelectedGlyphRange: NSRange(location: NSNotFound, length: 0),
                                                   in: textContainer) { rect, _ in
-                let visible = rect.offsetBy(dx: self.textContainerOrigin.x, dy: self.textContainerOrigin.y).intersection(self.visibleRect)
-                if !visible.isEmpty { self.addCursorRect(visible, cursor: .pointingHand) }
+                let visible = rect.offsetBy(dx: origin.x, dy: origin.y).intersection(viewport)
+                if !visible.isEmpty { rects.append(visible) }
             }
         }
+        return rects
+    }
+
+    private func playableRanges(intersecting range: NSRange) -> ArraySlice<NSRange> {
+        // Document entries are ordered and nonoverlapping, so skip offscreen
+        // sentences with a binary search instead of walking the entire file.
+        var lower = 0, upper = playableRanges.count
+        while lower < upper {
+            let middle = lower + (upper - lower) / 2
+            if NSMaxRange(playableRanges[middle]) <= range.location { lower = middle + 1 }
+            else { upper = middle }
+        }
+        var end = lower
+        while end < playableRanges.count, playableRanges[end].location < NSMaxRange(range) { end += 1 }
+        return playableRanges[lower..<end]
     }
 
     override func cursorUpdate(with event: NSEvent) {
