@@ -157,7 +157,7 @@ final class AppStore {
     }
 
     func canOrganizeLecture(_ id: UUID) -> Bool {
-        settings.analysisReady && canModify(id) && recordings.contains { $0.id == id && !$0.segments.isEmpty }
+        analysisReady && canModify(id) && recordings.contains { $0.id == id && !$0.segments.isEmpty }
     }
 
     func canRename(_ id: UUID) -> Bool {
@@ -248,9 +248,8 @@ final class AppStore {
             }
             recordingID = recording.id
             if settings.transcriptionReady {
-                let snapshot = settings.snapshot
                 let live = LocalRecordingTranscription(audio: try repository.audioURL(for: recording),
-                    directory: try repository.directory(for: recording), configuration: snapshot.transcription)
+                    directory: try repository.directory(for: recording), configuration: settings.transcriptionConfiguration)
                 let id = recording.id
                 live.onIssue = { [weak self] message in
                     guard let self, self.recordingID == id else { return }
@@ -367,12 +366,18 @@ final class AppStore {
         if !failures.isEmpty { errorMessage = failures.prefix(5).joined(separator: "\n\n") + (failures.count > 5 ? "\n외 \(failures.count - 5)개 파일을 가져오지 못했습니다." : "") }
     }
 
+    // Explicitly injected providers do not depend on Codex installation or
+    // model discovery. Connection failures are checked by the pipeline.
+    private var analysisReady: Bool {
+        settings.analysisEnabled && (textProvider != nil || settings.analysisReady)
+    }
+
     func enqueue(_ id: UUID, lectureOnly: Bool = false) {
         guard !isTerminating, !isSleeping, !isPreparingForSleep, !recoveringIDs.contains(id), recordings.contains(where: { $0.id == id }), id != recordingID, id != finalizingID, id != processingID, !importingIDs.contains(id), !queue.contains(id) else { return }
         if let item = recordings.first(where: { $0.id == id }), item.work?.kind == .recording,
            item.audioFileName == nil || item.duration <= 0 { return }
         // Preserve existing results when the local AI dependencies are unavailable.
-        guard lectureOnly ? settings.analysisReady : settings.transcriptionReady else {
+        guard lectureOnly ? analysisReady : settings.transcriptionReady else {
             errorMessage = lectureOnly ? settings.aiConnectionMessage : settings.transcriptionUnavailableReason
             return
         }
@@ -396,7 +401,8 @@ final class AppStore {
         processingSummaryOnly = lectureOnly
         updateProgress(.init(stage: lectureOnly ? .analysis : .preparing,
             detail: lectureOnly ? "저장된 전사문에서 핵심 요약을 준비합니다." : "녹음 길이와 저장된 전사 구간을 확인합니다."), for: id)
-        let snapshot = settings.snapshot
+        let configuration = settings.transcriptionConfiguration
+        let provider = settings.analysisEnabled ? (textProvider ?? settings.makeTextProvider()) : nil
         pipelineTask = Task { [weak self] in
             guard let self else { return }
             defer {
@@ -410,8 +416,11 @@ final class AppStore {
                 if lectureOnly {
                     guard self.update(id, { $0.status = .polishing }) else { return }
                     self.processingCompletedSteps = []
-                    let lecture = try await TranscriptionPipeline.organize(segments: item.segments, directory: directory, settings: snapshot,
-                        provider: self.textProvider,
+                    guard let provider else {
+                        throw SoriError.message("AI 연결 확인을 마친 뒤 다시 시도해 주세요. 녹음은 보관되어 있습니다.")
+                    }
+                    let lecture = try await TranscriptionPipeline.organize(segments: item.segments, directory: directory,
+                        provider: provider,
                         onProgress: { [weak self] value in self?.updateProgress(value, for: id) })
                     try Task.checkCancellation()
                     self.updateProgress(.init(stage: .saving, detail: "제목과 핵심 요약을 보관함에 저장합니다."), for: id)
@@ -421,7 +430,7 @@ final class AppStore {
                 }
                 var audio = try repository.audioURL(for: item)
                 if item.audioFileName == nil,
-                   let recovered = try await LocalTranscription.recoverInterrupted(audio: audio, directory: directory, language: snapshot.language) {
+                   let recovered = try await LocalTranscription.recoverInterrupted(audio: audio, directory: directory, language: configuration.language) {
                     guard self.update(id, { $0.audioFileName = recovered.lastPathComponent }) else { throw SoriError.message("복구한 음성의 위치를 저장하지 못했습니다.") }
                     audio = recovered
                     if self.selectedID == id { try? self.audio.load(recovered) }
@@ -434,8 +443,8 @@ final class AppStore {
                     return
                 }
                 let result = try await TranscriptionPipeline.transcribe(
-                    audio: audio, directory: directory, duration: info.duration, settings: snapshot,
-                    recognizer: self.recognizer, provider: self.textProvider,
+                    audio: audio, directory: directory, duration: info.duration, configuration: configuration,
+                    recognizer: self.recognizer, provider: provider,
                     onProgress: { [weak self] value in self?.updateProgress(value, for: id) },
                     onReviewed: { segments in
                         // Keep any previous user edits until a complete replacement is ready.
@@ -562,7 +571,7 @@ final class AppStore {
            let item = recordings.first(where: { $0.id == id }), let repository {
             do {
                 let live = LocalRecordingTranscription(audio: try repository.audioURL(for: item),
-                    directory: try repository.directory(for: item), configuration: settings.snapshot.transcription)
+                    directory: try repository.directory(for: item), configuration: settings.transcriptionConfiguration)
                 live.onIssue = { [weak self] message in self?.update(id) { $0.message = message } }
                 liveTranscription = live; live.start()
             } catch { errorMessage = error.localizedDescription }
@@ -572,7 +581,7 @@ final class AppStore {
     func canResumeWork(_ id: UUID) -> Bool {
         guard canModify(id), let item = recordings.first(where: { $0.id == id }), item.work?.state == .interrupted else { return false }
         if item.work?.kind == .recording && (item.audioFileName == nil || item.duration <= 0) { return false }
-        return settings.analysisReady && (item.work?.kind == .summary || settings.transcriptionReady)
+        return analysisReady && (item.work?.kind == .summary || settings.transcriptionReady)
     }
 
     func resumeWork(_ id: UUID) {

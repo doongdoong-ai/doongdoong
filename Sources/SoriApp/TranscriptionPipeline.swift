@@ -3,7 +3,6 @@ import SoriCore
 import SoriSpeech
 import DoongdoongTranscription
 import DoongdoongAI
-import DoongdoongCodex
 
 enum TranscriptionResult: Sendable {
     case transcribed(segments: [TranscriptSegment], lecture: LectureInsights?, warning: String?, reviewRanges: [AudioReviewRange])
@@ -43,9 +42,9 @@ enum TranscriptionPipeline {
     skills, or agents. Return only title and selectedIDs in the required JSON schema.
     """
     static func transcribe(audio: URL, directory: URL, duration: Double,
-                           settings: PipelineSettings,
+                           configuration: SpeechConfiguration,
                            recognizer: any SpeechRecognizer = LocalTranscription.engine,
-                           provider: (any TextGenerationProvider)? = nil,
+                           provider: (any TextGenerationProvider)?,
                            onProgress: (@MainActor @Sendable (ProcessingProgress) -> Void)? = nil,
                            onReviewed: (([TranscriptSegment]) throws -> Void)? = nil) async throws -> TranscriptionResult {
         try Task.checkCancellation()
@@ -60,7 +59,7 @@ enum TranscriptionPipeline {
         guard duration.isFinite, duration > 0 else { throw TranscriptionError.invalidAudio }
         let started = ProcessInfo.processInfo.systemUptime
         let original = try await LocalTranscription.transcribe(audio: audio, directory: directory,
-            configuration: settings.transcription, recognizer: recognizer, onProgress: { value in
+            configuration: configuration, recognizer: recognizer, onProgress: { value in
                 switch value.preparation {
                 case .checking:
                     await onProgress?(.init(stage: .speechPreparation, detail: "이 Mac의 음성 인식 언어 모델을 확인합니다."))
@@ -83,10 +82,9 @@ enum TranscriptionPipeline {
             warnings.append("일부 문장은 정확한 재생 위치를 확인하지 못해 대략적인 위치로 표시했습니다.")
         }
         onProgress?(.init(stage: .correction, detail: "AI 연결을 확인하고 교정을 준비합니다."))
-        guard settings.aiModel != nil || provider != nil else {
+        guard let textProvider = provider else {
             throw SoriError.message("음성 처리는 저장했습니다. AI를 연결해 교정을 완료하면 전사문을 볼 수 있어요.")
         }
-        let textProvider = try provider ?? settings.makeTextProvider()
         do {
             onProgress?(.init(stage: .correction, detail: "AI 연결을 확인하고 교정을 준비합니다."))
             let started = ProcessInfo.processInfo.systemUptime
@@ -132,10 +130,10 @@ enum TranscriptionPipeline {
         }
     }
 
-    static func organize(segments: [TranscriptSegment], directory: URL, settings: PipelineSettings,
-                         provider: (any TextGenerationProvider)? = nil,
+    static func organize(segments: [TranscriptSegment], directory: URL,
+                         provider: any TextGenerationProvider,
                          onProgress: (@MainActor @Sendable (ProcessingProgress) -> Void)? = nil) async throws -> LectureInsights {
-        let textProvider = try provider ?? settings.makeTextProvider()
+        let textProvider = provider
         do {
             try Task.checkCancellation()
             onProgress?(.init(stage: .analysis, detail: "AI 연결을 확인하고 요약을 준비합니다."))

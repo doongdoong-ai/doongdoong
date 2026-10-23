@@ -32,8 +32,11 @@ private actor RecoveryRecognizer: SpeechRecognizer {
 final class InterruptionTests: XCTestCase {
     @MainActor private func settings(_ root: URL) throws -> AppSettings {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: root.lastPathComponent))
-        defaults.set("/usr/bin/true", forKey: "codexPath")
-        return AppSettings(defaults: defaults, modelResolver: { _ in .sol })
+        defaults.set("/missing-codex", forKey: "codexPath")
+        return AppSettings(defaults: defaults, modelResolver: { _ in
+            XCTFail("An injected provider must not need Codex model discovery")
+            return .sol
+        })
     }
     private func wave(finalized: Bool) -> Data {
         var data = Data("RIFF".utf8)
@@ -85,11 +88,13 @@ final class InterruptionTests: XCTestCase {
         second.segments = [.init(id: 8, start: 0, end: 1, text: "사용자가 직접 고친 두 번째 문장입니다.")]
         try repo.save(second)
         for item in [first, second] { try wave(finalized: true).write(to: repo.audioURL(for: item)) }
-        let settings = try settings(root); await settings.refreshAIConnection()?.value
+        let settings = try settings(root)
+        XCTAssertFalse(settings.analysisReady)
         let provider = RecoveryProvider(), recognizer = RecoveryRecognizer()
         let began = expectation(description: "correction began")
         provider.began = { began.fulfill() }
         let store = AppStore(root: root, settings: settings, recognizer: recognizer, textProvider: provider)
+        XCTAssertTrue(store.canOrganizeLecture(second.id))
         store.enqueue(first.id); store.enqueue(second.id, lectureOnly: true)
         await fulfillment(of: [began], timeout: 5)
         XCTAssertTrue(store.recordings.first(where: { $0.id == first.id })?.segments.isEmpty == true)
@@ -142,7 +147,7 @@ final class InterruptionTests: XCTestCase {
         let repo = try LibraryRepository(root: root), project = try repo.createProject(name: "강의")
         let item = try repo.createRecording(project: project, title: "중단")
         try wave(finalized: true).write(to: repo.audioURL(for: item))
-        let settings = try settings(root); await settings.refreshAIConnection()?.value
+        let settings = try settings(root)
         let provider = RecoveryProvider(), began = expectation(description: "review requested")
         provider.began = { began.fulfill() }
         let store = AppStore(root: root, settings: settings, recognizer: RecoveryRecognizer(), textProvider: provider)
@@ -159,5 +164,47 @@ final class InterruptionTests: XCTestCase {
         XCTAssertNil(relaunched.processingID); XCTAssertTrue(relaunched.queue.isEmpty)
         XCTAssertEqual(relaunched.recordings.first?.work?.cause, .userStopped)
         XCTAssertFalse(relaunched.audio.isRecording)
+    }
+
+    @MainActor func testInjectedProviderRespectsAnalysisToggleAndCanResumeWithoutCodex() async throws {
+        let root = root(); defer { cleanup(root) }
+        let repo = try LibraryRepository(root: root), project = try repo.createProject(name: "강의")
+        let item = try repo.createRecording(project: project, title: "교정 대기")
+        try wave(finalized: true).write(to: repo.audioURL(for: item))
+        let settings = try settings(root)
+        settings.analysisEnabled = false
+        let provider = RecoveryProvider(), recognizer = RecoveryRecognizer()
+        provider.blocking = false
+        let store = AppStore(root: root, settings: settings, recognizer: recognizer, textProvider: provider)
+        store.enqueue(item.id)
+        let deadline = ContinuousClock.now.advanced(by: .seconds(8))
+        while store.processingID != nil {
+            guard ContinuousClock.now < deadline else { return XCTFail("Disabled analysis did not stop") }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertTrue(provider.inputs.isEmpty)
+        XCTAssertTrue(store.recordings.first?.segments.isEmpty == true)
+        XCTAssertEqual(store.recordings.first?.work?.state, .interrupted)
+        XCTAssertFalse(store.canResumeWork(item.id))
+        settings.analysisEnabled = true
+        XCTAssertFalse(settings.analysisReady, "Codex is unavailable in this fixture")
+        XCTAssertTrue(store.canResumeWork(item.id))
+        store.resumeWork(item.id)
+        while store.processingID != nil {
+            guard ContinuousClock.now < deadline else { return XCTFail("Injected provider did not resume") }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertEqual(provider.inputs.count, 2)
+        XCTAssertEqual(store.recordings.first?.status, .ready)
+        XCTAssertNil(store.recordings.first?.work)
+        let calls = await recognizer.calls
+        XCTAssertEqual(calls, 1)
+        XCTAssertTrue(store.canOrganizeLecture(item.id))
+        settings.analysisEnabled = false
+        XCTAssertFalse(store.canOrganizeLecture(item.id))
+        store.enqueue(item.id, lectureOnly: true)
+        XCTAssertNil(store.processingID)
+        XCTAssertTrue(store.queue.isEmpty)
+        XCTAssertEqual(provider.inputs.count, 2)
     }
 }
