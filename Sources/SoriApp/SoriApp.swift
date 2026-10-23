@@ -22,7 +22,7 @@ struct BungBungiApp {
 /// Explicit ownership also makes command-line launches and relocated .app bundles reliable.
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuItemValidation {
-    let store = AppStore()
+    let store = AppStore(settings: SettingsPreview.makeSettings())
     private var window: NSWindow?
     private var settingsWindow: NSWindow?
     private var terminationRequested = false
@@ -67,7 +67,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         if !args.contains("--snapshot") { window.setFrameAutosaveName("BungBungiMainWindow") }
         self.window = window
         observeSettings()
-        NotificationCenter.default.addObserver(self, selector: #selector(settings), name: Notification.Name("BungBungiShowSettings"), object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(showSettingsNotification(_:)), name: Notification.Name("BungBungiShowSettings"), object: nil)
         if !args.contains("--background") {
             if NSApp.isActive { window.makeKeyAndOrderFront(nil) }
             else { window.orderBack(nil) }
@@ -82,6 +82,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     }
 
     private func captureOffscreen(args: [String], path: String) {
+        if args.contains("--settings-preview") || args.contains("--providers-preview") { store.settings.refreshAIConnection() }
         if args.contains("--notes-preview") { store.showNotes = true }
         if args.contains("--focus-preview") { store.focusMode = true }
         // Give the bundled demo time to load, then construct the view from its final state.
@@ -148,11 +149,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                     self.store.recordings[index].segments[0].timingQuality = "approximate"
                 }
             }
+            SummaryPreview.configure(store: self.store, arguments: args)
             let settings = args.contains("--settings-preview") || args.contains("--providers-preview")
             let search = args.contains("--search-preview") || args.contains("--empty-search-preview")
             if search { self.store.transcriptSearch = args.contains("--empty-search-preview") ? "일치하지 않는 검색어" : "녹음" }
-            let size = settings ? NSSize(width: 600, height: args.contains("--provider-details-preview") ? 1000 : 600) : NSSize(width: args.contains("--minimum-window") ? 1000 : 1280, height: args.contains("--minimum-window") ? 670 : 820)
-            let content = settings ? AnyView(SettingsView(store: self.store, initialTab: args.contains("--providers-preview") ? 1 : 0, providerDetailsExpanded: args.contains("--provider-details-preview"), viewportHeight: size.height)) : AnyView(ContentView(store: self.store, transcriptVisible: args.contains("--transcript-preview"), searchVisible: search))
+            let size = settings ? (args.contains("--minimum-window") ? SettingsView.minimumSize : SettingsView.defaultSize) : NSSize(width: args.contains("--minimum-window") ? 1000 : 1280, height: args.contains("--minimum-window") ? 670 : 820)
+            if settings { self.store.settingsSection = args.contains("--providers-preview") ? .providers : (args.contains("--shortcuts-preview") ? .shortcuts : .speech) }
+            let content = settings ? AnyView(SettingsView(store: self.store, providerDetailsExpanded: args.contains("--provider-details-preview"))) : AnyView(ContentView(store: self.store, transcriptVisible: args.contains("--transcript-preview"), searchVisible: search))
             let view = NSHostingView(rootView: content.frame(width: size.width, height: size.height).environment(\.displayScale, 2).preferredColorScheme(.light).tint(SoriTheme.accent))
             view.appearance = NSAppearance(named: .aqua)
             view.frame = NSRect(origin: .zero, size: size)
@@ -192,7 +195,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         add("녹음 일시 정지", to: file, action: #selector(pauseRecording), key: "r", modifiers: [.command, .shift])
         add("오디오 가져오기…", to: file, action: #selector(importAudio), key: "o")
         file.addItem(.separator())
-        add("저장 폴더 열기", to: file, action: #selector(reveal))
         add("창 닫기", to: file, action: #selector(closeWindow), key: "w")
         attach(file, title: "파일", to: menu)
 
@@ -230,6 +232,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     }
     @objc private func about() { NSApp.orderFrontStandardAboutPanel(nil) }
     @objc private func settings() { store.showSettings = true; presentSettings() }
+    @objc private func showSettingsNotification(_ notification: Notification) {
+        if let value = notification.userInfo?["section"] as? String, let section = SettingsSection(rawValue: value) {
+            store.settingsSection = section
+        }
+        settings()
+    }
     @objc private func record() {
         if store.audio.isRecording { Task { await store.stopRecording() } }
         else { store.requestRecording() }
@@ -241,7 +249,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         Task { await resumed.value; await store.recoverRecordings() }
     }
     @objc private func importAudio() { store.importAudio() }
-    @objc private func reveal() { store.reveal() }
     @objc private func closeWindow() { NSApp.keyWindow?.performClose(nil) }
     @objc private func playPause() { store.audio.togglePlayback() }
     @objc private func backward() { store.audio.seek(store.audio.currentTime - 10) }
@@ -270,7 +277,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 
     private func presentSettings() {
         if settingsWindow == nil {
-            let settings = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 600), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            let settings = NSWindow(contentRect: NSRect(origin: .zero, size: SettingsView.defaultSize), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+            settings.contentMinSize = SettingsView.minimumSize
             settings.title = "둥둥이 설정"
             settings.isReleasedWhenClosed = false
             settings.delegate = self

@@ -441,7 +441,7 @@ struct RecordingDetailView: View {
                                 .font(.system(size: 14)).buttonStyle(.plain).foregroundStyle(SoriTheme.secondary).padding(.top, 7)
                                 .disabled(!store.canTranscribe(recording.id))
                         } else {
-                            Button("AI 설정") { NotificationCenter.default.post(name: Notification.Name("BungBungiShowSettings"), object: nil) }
+                            Button("음성 인식 설정") { NotificationCenter.default.post(name: Notification.Name("BungBungiShowSettings"), object: nil, userInfo: ["section": "speech"]) }
                                 .font(.system(size: 14)).buttonStyle(.plain).foregroundStyle(SoriTheme.secondary).padding(.top, 7)
                         }
                     } else {
@@ -452,7 +452,7 @@ struct RecordingDetailView: View {
                         if store.settings.transcriptionReady {
                             Button("AI 정리 시작") { store.enqueue(recording.id) }.buttonStyle(PrimaryButtonStyle()).padding(.top, 7).disabled(!store.canTranscribe(recording.id))
                         } else {
-                            Button("AI 설정") { NotificationCenter.default.post(name: Notification.Name("BungBungiShowSettings"), object: nil) }
+                            Button("음성 인식 설정") { NotificationCenter.default.post(name: Notification.Name("BungBungiShowSettings"), object: nil, userInfo: ["section": "speech"]) }
                                 .buttonStyle(.bordered).padding(.top, 7)
                         }
                     }

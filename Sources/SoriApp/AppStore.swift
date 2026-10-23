@@ -21,6 +21,7 @@ final class AppStore {
     var errorMessage: String?
     var toast: String?
     var showSettings = false
+    var settingsSection: SettingsSection = .speech
     var showRecordingDestination = false
     var librarySearchRequested = false
     var recordingID: UUID?
@@ -692,13 +693,6 @@ final class AppStore {
             if selectedID == recording.id { select(visibleRecordings.first?.id) }
             notify("휴지통으로 이동했습니다")
         } catch { errorMessage = error.localizedDescription }
-    }
-    func reveal(_ recording: Recording? = nil) {
-        if let recording, let url = try? repository?.directory(for: recording) { NSWorkspace.shared.activateFileViewerSelecting([url]) }
-        else { NSWorkspace.shared.open(root) }
-    }
-    func revealProject(_ project: Project) {
-        if let url = repository?.projectLocations[project.id] { NSWorkspace.shared.open(url) }
     }
     func export(_ recording: Recording, format: String) {
         let panel = NSSavePanel(); panel.nameFieldStringValue = LibraryRepository.safeName(recording.title) + "." + format

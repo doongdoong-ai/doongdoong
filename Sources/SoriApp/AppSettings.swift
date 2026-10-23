@@ -16,6 +16,7 @@ final class AppSettings {
     var reasoningEffort: ReasoningEffort { didSet { defaults.set(reasoningEffort.rawValue, forKey: "codexReasoningEffort"); selectFromCatalog() } }
     var requestTimeout: Double { didSet { defaults.set(requestTimeout, forKey: "codexRequestTimeout") } }
     private let defaults: UserDefaults
+    private let speechAvailabilityResolver: @Sendable (SpeechConfiguration) async -> SpeechAvailability
     private let catalogResolver: @MainActor (URL) async throws -> CodexCatalog
     private(set) var catalog: CodexCatalog?
     private(set) var lastConnectionCheck: Date?
@@ -98,8 +99,10 @@ final class AppSettings {
 
     init(defaults: UserDefaults = .standard,
          modelResolver: (@MainActor (URL) async throws -> CodexModel)? = nil,
-         catalogResolver: @escaping @MainActor (URL) async throws -> CodexCatalog = { try await CodexModelDiscovery.catalog(executable: $0) }) {
+         catalogResolver: @escaping @MainActor (URL) async throws -> CodexCatalog = { try await CodexModelDiscovery.catalog(executable: $0) },
+         speechAvailabilityResolver: @escaping @Sendable (SpeechConfiguration) async -> SpeechAvailability = { await AppleSpeechEngine.availability(configuration: $0) }) {
         self.defaults = defaults
+        self.speechAvailabilityResolver = speechAvailabilityResolver
         if let modelResolver {
             self.catalogResolver = { url in .init(models: [.init(model: try await modelResolver(url), reasoningEfforts: [.medium])]) }
         } else { self.catalogResolver = catalogResolver }
@@ -163,8 +166,9 @@ final class AppSettings {
         cancelSpeechPreparation()
         speechAvailability = nil; speechPreparationError = nil
         let generation = speechGeneration, configuration = SpeechConfiguration(language: language)
+        let resolve = speechAvailabilityResolver
         let task = Task { [weak self] in
-            let status = await AppleSpeechEngine.availability(configuration: configuration)
+            let status = await resolve(configuration)
             guard let self, !Task.isCancelled, self.speechGeneration == generation else { return }
             self.speechAvailability = status
         }
