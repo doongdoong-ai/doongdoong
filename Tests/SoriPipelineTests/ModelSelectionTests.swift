@@ -16,14 +16,14 @@ final class ModelSelectionTests: XCTestCase {
         await settings.refreshAIConnection()?.value
         settings.reasoningEffort = .high
         settings.requestTimeout = 600
-        let job = settings.snapshot
+        let job = try XCTUnwrap(settings.makeTextProvider() as? CodexTextProvider).configuration
         settings.preferredModelID = CodexModel.luna.rawValue
         XCTAssertNil(settings.selectedModel, "Unsupported effort must not silently fall back")
         settings.reasoningEffort = .medium
         XCTAssertEqual(settings.selectedModel, .luna)
         settings.analysisEnabled = false
-        XCTAssertNil(settings.snapshot.aiModel)
-        XCTAssertEqual(job.aiModel, .sol)
+        XCTAssertNil(settings.makeTextProvider())
+        XCTAssertEqual(job.model, .sol)
         XCTAssertEqual(job.reasoningEffort, .high)
         XCTAssertEqual(job.requestTimeout, 600)
         let restored = AppSettings(defaults: defaults)
@@ -41,6 +41,7 @@ final class ModelSelectionTests: XCTestCase {
         var calls = 0
         let first = AppSettings(defaults: defaults, modelResolver: { _ in calls += 1; return .sol })
         XCTAssertNil(first.selectedModel)
+        XCTAssertNil(first.makeTextProvider(), "An unverified model must not create a provider")
         await first.refreshAIConnection()?.value
         XCTAssertEqual(first.selectedModel, .sol)
         let next = AppSettings(defaults: defaults, modelResolver: { _ in calls += 1; return .luna })
@@ -76,7 +77,7 @@ final class ModelSelectionTests: XCTestCase {
         pending?.resume(returning: .sol)
         await old?.value
         XCTAssertEqual(settings.selectedModel, .luna)
-        XCTAssertEqual(settings.snapshot.aiModel, .luna)
+        XCTAssertEqual(settings.makeTextProvider()?.identity.model, CodexModel.luna.rawValue)
     }
 
     @MainActor func testCLIRequestsUseChosenModelMediumAndExplicitProvider() throws {
@@ -89,8 +90,6 @@ final class ModelSelectionTests: XCTestCase {
             XCTAssertTrue(arguments.contains("model_provider=\"openai\""))
             XCTAssertTrue(arguments.contains("--ignore-user-config"))
         }
-        let settings = PipelineSettings(codex: "/usr/bin/true", ffmpeg: "", language: "ko", transcription: .init())
-        XCTAssertThrowsError(try settings.requireModel())
     }
     @MainActor func testLocalTranscriptionDoesNotRequireCodexOrLogin() throws {
         let name = "doongdoong-test-\(UUID().uuidString)"
@@ -111,7 +110,7 @@ final class ModelSelectionTests: XCTestCase {
         let settings = AppSettings(defaults: defaults)
         XCTAssertEqual(settings.language, "ko")
         XCTAssertEqual(defaults.string(forKey: "language"), "ko")
-        XCTAssertEqual(settings.snapshot.transcription.localeIdentifier, "ko-KR")
+        XCTAssertEqual(settings.transcriptionConfiguration.localeIdentifier, "ko-KR")
         XCTAssertTrue(settings.transcriptionReady, "Unknown/downloadable assets must not prevent recording")
     }
 

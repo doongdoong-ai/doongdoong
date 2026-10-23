@@ -3,6 +3,7 @@ import DoongdoongAI
 @testable import SoriCore
 
 final class LectureReviewTests: XCTestCase {
+    private let testIdentity = TextProviderIdentity(provider: "fixture", model: "fixture", reasoningEffort: "test")
     func testProviderAndEffortHaveSeparateCachesAndRetriesDoNotAdvanceProgress() async throws {
         let directory = try root(); defer { try? FileManager.default.removeItem(at: directory) }
         let source = [segment(0, "이 문장을 보존합니다.")]
@@ -118,7 +119,7 @@ final class LectureReviewTests: XCTestCase {
         let cache = directory.appendingPathComponent("review.json")
         var covered: [Int] = []
         var calls = 0
-        let outcome = try await LectureReview.review(source, cacheURL: cache) { request in
+        let outcome = try await LectureReview.review(source, cacheURL: cache, identity: testIdentity) { request in
             calls += 1
             let object = try XCTUnwrap(JSONSerialization.jsonObject(with: request.input) as? [String: Any])
             let all = try XCTUnwrap(object["source"] as? [String: Any])
@@ -129,11 +130,11 @@ final class LectureReviewTests: XCTestCase {
         XCTAssertEqual(calls, 1)
         XCTAssertEqual(covered, Array(0..<100))
         XCTAssertEqual(outcome.segments, source)
-        let cached = try await LectureReview.review(source, cacheURL: cache) { _ in XCTFail("Cache miss"); return self.noop }
+        let cached = try await LectureReview.review(source, cacheURL: cache, identity: testIdentity) { _ in XCTFail("Cache miss"); return self.noop }
         XCTAssertTrue(cached.cached)
         var changed = source; changed[0].text += " 사용자가 고침"
         var refreshed = 0
-        _ = try await LectureReview.review(changed, cacheURL: cache) { _ in refreshed += 1; return self.noop }
+        _ = try await LectureReview.review(changed, cacheURL: cache, identity: testIdentity) { _ in refreshed += 1; return self.noop }
         XCTAssertEqual(refreshed, 1)
     }
 
@@ -163,7 +164,7 @@ final class LectureReviewTests: XCTestCase {
         let directory = try root(); defer { try? FileManager.default.removeItem(at: directory) }
         let source = (0..<400).map { segment($0, String(repeating: "Lecture text ", count: 40) + "end \($0)") }
         var calls = 0
-        _ = try await LectureReview.review(source, cacheURL: directory.appendingPathComponent("review.json")) { request in
+        _ = try await LectureReview.review(source, cacheURL: directory.appendingPathComponent("review.json"), identity: testIdentity) { request in
             calls += 1
             let object = try XCTUnwrap(JSONSerialization.jsonObject(with: request.input) as? [String: Any])
             let full = try XCTUnwrap(object["source"] as? [String: Any])
@@ -180,7 +181,7 @@ final class LectureReviewTests: XCTestCase {
         let source = (0..<50).map { segment($0, "Preserve sentence \($0).") }
         var calls = 0
         do {
-            _ = try await LectureReview.review(source, cacheURL: cache) { _ in
+            _ = try await LectureReview.review(source, cacheURL: cache, identity: testIdentity) { _ in
                 calls += 1
                 if calls == 1 { throw TextGenerationError.capacityExceeded }
                 return calls == 2 ? self.noop : Data("{}".utf8)
@@ -196,7 +197,7 @@ final class LectureReviewTests: XCTestCase {
         let directory = try root(); defer { try? FileManager.default.removeItem(at: directory) }
         let source = (0..<16).map { segment($0, "Preserve sentence \($0).") }
         var requests: [[Int]] = [], covered: [Int] = [], progress: [Int] = []
-        let result = try await LectureReview.review(source, cacheURL: directory.appendingPathComponent("review.json"),
+        let result = try await LectureReview.review(source, cacheURL: directory.appendingPathComponent("review.json"), identity: testIdentity,
             onProgress: { progress.append($0.completed) }) { request in
             let payload = try JSONSerialization.jsonObject(with: request.input) as! [String: Any]
             let ids = payload["editableIDs"] as! [Int]; requests.append(ids)
@@ -216,7 +217,7 @@ final class LectureReviewTests: XCTestCase {
         let directory = try root(); defer { try? FileManager.default.removeItem(at: directory) }
         let source = (0..<200).map { segment($0, String(repeating: "a", count: 3000)) }
         var covered: [Int] = [], calls = 0
-        _ = try await LectureReview.review(source, cacheURL: directory.appendingPathComponent("review.json")) { request in
+        _ = try await LectureReview.review(source, cacheURL: directory.appendingPathComponent("review.json"), identity: testIdentity) { request in
             calls += 1; XCTAssertLessThanOrEqual(request.input.count, 500_000)
             let payload = try JSONSerialization.jsonObject(with: request.input) as! [String: Any]
             covered += payload["editableIDs"] as! [Int]
@@ -225,7 +226,7 @@ final class LectureReviewTests: XCTestCase {
         XCTAssertEqual(calls, 2); XCTAssertEqual(covered, Array(0..<200))
         calls = 0
         do {
-            _ = try await LectureReview.review([segment(0, "one")], cacheURL: directory.appendingPathComponent("single.json")) { _ in
+            _ = try await LectureReview.review([segment(0, "one")], cacheURL: directory.appendingPathComponent("single.json"), identity: testIdentity) { _ in
                 calls += 1; throw TextGenerationError.capacityExceeded
             }
             XCTFail("Must stop at an indivisible sentence")
@@ -238,7 +239,7 @@ final class LectureReviewTests: XCTestCase {
             var calls = 0
             let cache = directory.appendingPathComponent("review.json")
             do {
-                _ = try await LectureReview.review([segment(0, "보존할 원문.")], cacheURL: cache) { _ in calls += 1; throw error }
+                _ = try await LectureReview.review([segment(0, "보존할 원문.")], cacheURL: cache, identity: testIdentity) { _ in calls += 1; throw error }
                 XCTFail("Should throw")
             } catch { XCTAssertEqual(calls, 1); XCTAssertFalse(FileManager.default.fileExists(atPath: cache.path)) }
         }
@@ -247,7 +248,7 @@ final class LectureReviewTests: XCTestCase {
     func testNoPermissionToWriteCannotReportSuccessfulReview() async throws {
         let directory = try root(); defer { try? FileManager.default.removeItem(at: directory) }
         do {
-            _ = try await LectureReview.review([segment(0, "보존할 원문.")], cacheURL: directory.appendingPathComponent("missing/review.json")) { _ in self.noop }
+            _ = try await LectureReview.review([segment(0, "보존할 원문.")], cacheURL: directory.appendingPathComponent("missing/review.json"), identity: testIdentity) { _ in self.noop }
             XCTFail("Should not report a revision that was never committed")
         } catch { XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("missing/review.json").path)) }
     }
@@ -260,7 +261,7 @@ final class LectureReviewTests: XCTestCase {
             .init(ids: [1], before: "핵심 입니다", after: "핵심입니다")])
         let cache = directory.appendingPathComponent("review.json")
         var calls = 0
-        let result = try await LectureReview.review(source, cacheURL: cache) { request in
+        let result = try await LectureReview.review(source, cacheURL: cache, identity: testIdentity) { request in
             calls += 1
             return try JSONEncoder().encode(proposal)
         }
@@ -268,7 +269,7 @@ final class LectureReviewTests: XCTestCase {
         XCTAssertEqual(result.segments[0], source[0])
         XCTAssertEqual(result.segments[1].text, "핵심입니다.")
         XCTAssertEqual(result.preservedSegments, 1)
-        let restored = try await LectureReview.review(source, cacheURL: cache) { _ in XCTFail("Expected cache"); return self.noop }
+        let restored = try await LectureReview.review(source, cacheURL: cache, identity: testIdentity) { _ in XCTFail("Expected cache"); return self.noop }
         XCTAssertEqual(restored.preservedSegments, 1)
         XCTAssertEqual(restored.segments, result.segments)
     }
@@ -331,7 +332,7 @@ final class LectureReviewTests: XCTestCase {
             .init(ids: [0], before: "설명합니다.", after: "설명합니다!"),
             .init(ids: [0], before: "설명합니다.", after: "설명 합니다.")])
         var calls = 0
-        let result = try await LectureReview.review(source, cacheURL: directory.appendingPathComponent("review.json")) { _ in
+        let result = try await LectureReview.review(source, cacheURL: directory.appendingPathComponent("review.json"), identity: testIdentity) { _ in
             calls += 1; return try JSONEncoder().encode(plan)
         }
         XCTAssertEqual(calls, 1)
@@ -346,7 +347,7 @@ final class LectureReviewTests: XCTestCase {
         let cache = directory.appendingPathComponent("review.json")
         var calls = 0
         do {
-            _ = try await LectureReview.review(source, cacheURL: cache) { _ in
+            _ = try await LectureReview.review(source, cacheURL: cache, identity: testIdentity) { _ in
                 calls += 1
                 if calls == 1 { throw TextGenerationError.capacityExceeded }
                 if calls == 3 { throw SoriError.message("offline") }
@@ -355,7 +356,7 @@ final class LectureReviewTests: XCTestCase {
             XCTFail("Expected offline error")
         } catch { XCTAssertFalse(FileManager.default.fileExists(atPath: cache.path)) }
         calls = 0
-        let result = try await LectureReview.review(source, cacheURL: cache) { request in
+        let result = try await LectureReview.review(source, cacheURL: cache, identity: testIdentity) { request in
             calls += 1
             let payload = try JSONSerialization.jsonObject(with: request.input) as! [String: Any]
             let ids = payload["editableIDs"] as! [Int]

@@ -147,7 +147,7 @@ public enum LectureReview {
     /// Try the entire lecture first. Only capacity errors create a binary split.
     /// Child receipts remain private until every sentence has been reviewed.
     public static func review(_ source: [TranscriptSegment], cacheURL: URL,
-                              identity: TextProviderIdentity = .init(provider: "codex", model: "gpt-6.1-sol", reasoningEffort: "medium"),
+                              identity: TextProviderIdentity,
                               onProgress: ((Progress) async -> Void)? = nil,
                               request: (Request) async throws -> Data) async throws -> Outcome {
         try Task.checkCancellation()

@@ -201,36 +201,13 @@ final class AppSettings {
     }
     var codexReady: Bool { FileManager.default.isExecutableFile(atPath: codexPath) }
     var analysisReady: Bool { analysisEnabled && codexReady && selectedModel != nil }
-    var snapshot: PipelineSettings {
-        .init(codex: codexPath, ffmpeg: ffmpegPath, language: language, aiModel: analysisEnabled ? selectedModel : nil,
-              reasoningEffort: reasoningEffort, requestTimeout: requestTimeout,
-              transcription: .init(language: language))
-    }
-}
+    var transcriptionConfiguration: SpeechConfiguration { .init(language: language) }
 
-struct PipelineSettings: Sendable {
-    let codex: String
-    let ffmpeg: String
-    let language: String
-    let aiModel: CodexModel?
-    let reasoningEffort: ReasoningEffort
-    let requestTimeout: Double
-    let transcription: SpeechConfiguration
-
-    init(codex: String, ffmpeg: String, language: String, aiModel: CodexModel? = nil,
-         reasoningEffort: ReasoningEffort = .medium, requestTimeout: Double = 300,
-         transcription: SpeechConfiguration) {
-        self.codex = codex; self.ffmpeg = ffmpeg; self.language = language
-        self.aiModel = aiModel; self.transcription = transcription
-        self.reasoningEffort = reasoningEffort; self.requestTimeout = requestTimeout
-    }
-
-    func requireModel() throws -> CodexModel {
-        guard let aiModel else { throw SoriError.message("AI 연결 확인을 마친 뒤 다시 시도해 주세요. 녹음은 보관되어 있습니다.") }
-        return aiModel
-    }
-    @MainActor func makeTextProvider() throws -> any TextGenerationProvider {
-        CodexTextProvider(configuration: .init(executable: URL(fileURLWithPath: codex), model: try requireModel(),
+    // Compose a provider from the current vendor settings once per job. Its
+    // immutable configuration keeps later UI changes out of the running job.
+    func makeTextProvider() -> (any TextGenerationProvider)? {
+        guard analysisEnabled, let model = selectedModel else { return nil }
+        return CodexTextProvider(configuration: .init(executable: URL(fileURLWithPath: codexPath), model: model,
             reasoningEffort: reasoningEffort, requestTimeout: requestTimeout))
     }
 }
