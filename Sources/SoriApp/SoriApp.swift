@@ -84,7 +84,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     }
 
     private func captureOffscreen(args: [String], path: String) {
-        if args.contains("--settings-preview") || args.contains("--providers-preview") || args.contains("--connection-preview") { store.settings.refreshAIConnection() }
+        if args.contains("--settings-preview") || args.contains("--providers-preview") || args.contains("--connection-preview") || args.contains("--sidebar-ai-preview") { store.settings.refreshAIConnection() }
         if args.contains("--notes-preview") { store.showNotes = true }
         if args.contains("--focus-preview") { store.focusMode = true }
         // Give the bundled demo time to load, then construct the view from its final state.

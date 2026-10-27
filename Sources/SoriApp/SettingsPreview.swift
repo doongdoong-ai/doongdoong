@@ -8,7 +8,7 @@ import DoongdoongTranscription
 @MainActor enum SettingsPreview {
     static func makeSettings() -> AppSettings? {
         let args = ProcessInfo.processInfo.arguments
-        guard args.contains("--snapshot"), args.contains("--settings-preview") || args.contains("--providers-preview") || args.contains("--connection-preview") else { return nil }
+        guard args.contains("--snapshot"), args.contains("--settings-preview") || args.contains("--providers-preview") || args.contains("--connection-preview") || args.contains("--sidebar-ai-preview") else { return nil }
         let name = "doongdoong-settings-preview-\(UUID().uuidString)"
         guard let defaults = UserDefaults(suiteName: name) else { return nil }
         defer { defaults.removePersistentDomain(forName: name) }
@@ -17,6 +17,9 @@ import DoongdoongTranscription
         defaults.set("/usr/bin/true", forKey: "ffmpegPath")
         defaults.set(!args.contains("--providers-disabled-preview"), forKey: "analysisEnabled")
         return AppSettings(defaults: defaults, connectionVerifier: { _, preferred, effort in
+            if args.contains("--sidebar-ai-checking-preview") { try await Task.sleep(for: .seconds(30)) }
+            if args.contains("--sidebar-ai-quota-preview") { throw ProviderConnectionIssue(.usageLimited, stage: .probe) }
+            if args.contains("--sidebar-ai-unknown-preview") { throw ProviderConnectionIssue(.unknown, stage: .probe) }
             if args.contains("--providers-login-preview") { throw ProviderConnectionIssue(.loginRequired, stage: .account, retry: .afterUserAction) }
             if args.contains("--providers-error-preview") { throw ProviderConnectionIssue(.network, stage: .account, retry: .manual) }
             if args.contains("--connection-preview") {

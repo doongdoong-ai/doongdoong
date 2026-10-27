@@ -17,6 +17,12 @@ import tempfile
 
 
 SCENARIOS = (
+    ("sidebar-ai-ready", ("--sidebar-ai-preview",), True, (2560, 1640)),
+    ("sidebar-ai-checking", ("--sidebar-ai-preview", "--sidebar-ai-checking-preview", "--minimum-window"), True, (2000, 1340)),
+    ("sidebar-ai-login", ("--sidebar-ai-preview", "--providers-login-preview", "--minimum-window"), True, (2000, 1340)),
+    ("sidebar-ai-quota", ("--sidebar-ai-preview", "--sidebar-ai-quota-preview"), True, (2560, 1640)),
+    ("sidebar-ai-unknown", ("--sidebar-ai-preview", "--sidebar-ai-unknown-preview", "--minimum-window"), True, (2000, 1340)),
+    ("sidebar-ai-disabled", ("--sidebar-ai-preview", "--providers-disabled-preview", "--recording-only-preview", "--recording-active-preview", "--minimum-window"), True, (2000, 1340)),
     ("connection-unknown", ("--connection-preview",), False, (960, 700)),
     ("connection-login", ("--connection-preview", "--connection-login-preview"), False, (960, 700)),
     ("connection-install", ("--connection-preview", "--connection-install-preview"), False, (960, 820)),
