@@ -166,6 +166,8 @@ struct SidebarView: View {
                 }.help("설정 열기 · ⌘,")
             }.font(.system(size: 14)).buttonStyle(.plain).foregroundStyle(SoriTheme.secondary)
                 .padding(.horizontal, 23).padding(.vertical, 24)
+
+            SidebarAIStatusView(settings: store.settings)
         }
         .background(SoriTheme.sidebar)
         .onChange(of: store.selectedProjectID, initial: true) { _, id in
