@@ -20,11 +20,18 @@ private actor StubRecognizer: SpeechRecognizer {
     var requests = 0
     let invalid: Bool
     var invalidAnalysis = false
+    var correctionEstimate: TimeInterval = 321
+    var summaryEstimate: TimeInterval = 87
+    var estimatedWorkloads: [TextGenerationWorkload] = []
     var willGenerate: ((StructuredTextRequest) -> Void)?
     init(invalid: Bool = false, identity: TextProviderIdentity = .init(provider: "test-vendor", model: "test-model", reasoningEffort: "test-effort")) {
         self.invalid = invalid; self.identity = identity
     }
     func checkConnection() async throws {}
+    func estimatedDuration(for workload: TextGenerationWorkload) -> TimeInterval {
+        estimatedWorkloads.append(workload)
+        return workload.task == .correction ? correctionEstimate : summaryEstimate
+    }
     func generate(_ request: StructuredTextRequest) async throws -> Data {
         requests += 1
         willGenerate?(request)
@@ -41,6 +48,39 @@ private actor StubRecognizer: SpeechRecognizer {
 }
 
 final class TranscriptionPipelineTests: XCTestCase {
+    @MainActor func testSelectedVendorsEstimateReachesBothProgressIndicators() async throws {
+        let (root, audio, configuration) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let recognizer = StubRecognizer()
+        // Same model/effort and input: only the provider's implementation changes.
+        for (vendor, correction, summary) in [("vendor-a", 321.0, 87.0), ("vendor-b", 45.0, 12.0)] {
+            let provider = StubTextProvider(identity: .init(provider: vendor, model: "same", reasoningEffort: "same"))
+            provider.correctionEstimate = correction; provider.summaryEstimate = summary
+            var progress: [ProcessingProgress] = []
+            provider.willGenerate = { request in
+                let stage: ProcessingProgress.Stage = request.instructions == LectureReviewPrompts.correction ? .correction : .analysis
+                XCTAssertNotNil(progress.last(where: { $0.stage == stage })?.estimatedDuration,
+                                "The UI must have the vendor estimate before waiting for generation")
+            }
+            _ = try await TranscriptionPipeline.transcribe(audio: audio, directory: root, duration: 1,
+                configuration: configuration, recognizer: recognizer, provider: provider,
+                onProgress: { progress.append($0) })
+            XCTAssertEqual(provider.estimatedWorkloads, [
+                .init(task: .correction, characterCount: "원문 그대로 보관합니다.".count),
+                .init(task: .summary, characterCount: "원문 그대로 보관합니다.".count)
+            ])
+            for (stage, expected) in [(ProcessingProgress.Stage.correction, correction), (.analysis, summary)] {
+                let pending = try XCTUnwrap(progress.first(where: { $0.stage == stage && $0.estimatedDuration != nil }))
+                XCTAssertEqual(pending.estimatedDuration, expected)
+                XCTAssertTrue(pending.indicator(elapsed: expected / 2).isEstimated)
+                XCTAssertNotNil(pending.indicator(elapsed: expected / 2).fraction)
+                let finished = try XCTUnwrap(progress.last(where: { $0.stage == stage }))
+                XCTAssertEqual(finished.indicator(elapsed: expected).fraction, 1)
+                XCTAssertFalse(finished.indicator(elapsed: expected).isEstimated)
+            }
+        }
+    }
+
     @MainActor func testLongLectureSummaryOnlyCompletesAfterSynthesis() async throws {
         let (root, _, _) = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }

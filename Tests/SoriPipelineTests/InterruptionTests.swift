@@ -18,6 +18,7 @@ private actor RecoveryRecognizer: SpeechRecognizer {
     var blocking = true
     var inputs: [String] = []
     var began: (() -> Void)?
+    func estimatedDuration(for workload: TextGenerationWorkload) -> TimeInterval { 120 }
     func checkConnection() async throws {}
     func generate(_ request: StructuredTextRequest) async throws -> Data {
         inputs.append(String(decoding: request.input, as: UTF8.self))
