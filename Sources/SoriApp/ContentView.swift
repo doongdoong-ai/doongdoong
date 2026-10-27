@@ -13,10 +13,8 @@ struct ContentView: View {
                 RecordingWorkspaceView(store: store, recording: recording).id(id)
             } else {
                 HStack(spacing: 0) {
-                    SidebarView(store: store).frame(width: geometry.size.width > 1150 ? 280 : 250)
-                    Rectangle().fill(SoriTheme.line).frame(width: 1)
-                    if !store.focusMode && store.selectedProjectID == nil {
-                        LibraryView(store: store).frame(width: geometry.size.width > 1150 ? 294 : 270)
+                    if !store.focusMode {
+                        SidebarView(store: store).frame(width: geometry.size.width > 1150 ? 280 : 250)
                         Rectangle().fill(SoriTheme.line).frame(width: 1)
                     }
                     Group {
@@ -84,7 +82,25 @@ struct SidebarView: View {
     @State private var hoveredCollection: String?
     @State private var expandedProjects: Set<UUID> = []
     @State private var dropProjectID: UUID?
+    @AppStorage("librarySort") private var sort = LibrarySort.newest
+    @State private var filter = LibraryFilter.all
     @FocusState private var focusedCollection: String?
+    @FocusState private var searchFocused: Bool
+    @FocusState private var listFocused: Bool
+
+    private var query: String { store.search.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var items: [Recording] { ordered(store.visibleRecordings) }
+
+    private func ordered(_ recordings: [Recording]) -> [Recording] {
+        recordings.filter { filter.includes($0, queued: store.queue.contains($0.id)) }.sorted {
+            switch sort {
+            case .newest: $0.createdAt > $1.createdAt
+            case .oldest: $0.createdAt < $1.createdAt
+            case .title: $0.title.localizedStandardCompare($1.title) == .orderedAscending
+            case .longest: $0.duration == $1.duration ? $0.createdAt > $1.createdAt : $0.duration > $1.duration
+            }
+        }
+    }
 
     private var recordingDestination: String {
         store.projects.first { $0.id == store.selectedProjectID }?.name ?? store.projects.first?.name ?? "작업 폴더"
@@ -123,27 +139,41 @@ struct SidebarView: View {
                 }.frame(maxWidth: .infinity).padding(.horizontal, 18).padding(.top, 4)
             }
 
-            VStack(spacing: 2) {
-                collectionRow("모든 녹음", icon: "waveform", selected: store.selectedProjectID == nil && !store.favoritesOnly) { store.selectCollection(nil) }
-                collectionRow("즐겨찾기", icon: "star", selected: store.favoritesOnly) { store.selectCollection(nil, favorites: true) }
-            }.padding(.horizontal, 12).padding(.top, 24)
+            librarySearch.padding(.horizontal, 18).padding(.top, 17).padding(.bottom, 10)
 
-            HStack {
-                Text("폴더").font(.system(size: 13)).foregroundStyle(SoriTheme.secondary)
-                Spacer()
-                Button { folderName = ""; showNewFolder = true } label: {
-                    Image(systemName: "plus").font(.system(size: 14))
-                }.buttonStyle(QuietButtonStyle()).help("새 작업 폴더 만들기").accessibilityLabel("새 작업 폴더 만들기")
-                    .disabled(store.repository == nil)
-            }.padding(.leading, 23).padding(.trailing, 16).padding(.top, 22).padding(.bottom, 4)
-
-            ScrollView {
-                VStack(spacing: 2) {
-                    ForEach(store.projects) { project in
-                        projectBranch(project)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 2) {
+                        if !query.isEmpty {
+                            Text("\(store.collectionTitle) 검색 결과").font(.system(size: 12)).foregroundStyle(SoriTheme.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 11).padding(.vertical, 9)
+                            recordingLinks(items)
+                        } else {
+                            collectionRow("모든 녹음", icon: "waveform", selected: store.selectedProjectID == nil && !store.favoritesOnly) { store.selectCollection(nil) }
+                            if store.selectedProjectID == nil && !store.favoritesOnly { recordingLinks(items) }
+                            collectionRow("즐겨찾기", icon: "star", selected: store.favoritesOnly) { store.selectCollection(nil, favorites: true) }
+                            if store.favoritesOnly { recordingLinks(items) }
+                            HStack {
+                                Text("폴더").font(.system(size: 13)).foregroundStyle(SoriTheme.secondary)
+                                Spacer()
+                                Button { folderName = ""; showNewFolder = true } label: { Image(systemName: "plus").font(.system(size: 14)) }
+                                    .buttonStyle(QuietButtonStyle()).help("새 작업 폴더 만들기").accessibilityLabel("새 작업 폴더 만들기")
+                                    .disabled(store.repository == nil)
+                            }.padding(.leading, 11).padding(.trailing, 4).padding(.top, 18).padding(.bottom, 4)
+                            ForEach(store.projects) { project in projectBranch(project) }
+                        }
+                    }.padding(.horizontal, 12).padding(.bottom, 12)
+                }.frame(minHeight: 60)
+                    .focusable().focused($listFocused).focusEffectDisabled()
+                    .onMoveCommand { direction in
+                        guard direction == .up || direction == .down, !items.isEmpty else { return }
+                        let index = items.firstIndex { $0.id == store.selectedID }
+                        let next = min(items.count - 1, max(0, (index ?? (direction == .down ? -1 : items.count)) + (direction == .down ? 1 : -1)))
+                        store.select(items[next].id)
+                        let prefix = query.isEmpty && store.selectedProjectID != nil ? "folder-" : "collection-"
+                        proxy.scrollTo(prefix + items[next].id.uuidString)
                     }
-                }.padding(.horizontal, 12)
-            }.frame(minHeight: 60)
+            }
 
             if store.audio.isRecording {
                 VStack(alignment: .leading, spacing: 12) {
@@ -176,6 +206,11 @@ struct SidebarView: View {
         .background(SoriTheme.sidebar)
         .onChange(of: store.selectedProjectID, initial: true) { _, id in
             if let id { expandedProjects.insert(id) }
+            filter = .all
+        }
+        .onChange(of: store.favoritesOnly) { _, _ in filter = .all }
+        .onChange(of: store.librarySearchRequested, initial: true) { _, requested in
+            if requested { searchFocused = true; store.librarySearchRequested = false }
         }
         .alert("새 작업 폴더", isPresented: $showNewFolder) {
             TextField("폴더 이름", text: $folderName)
@@ -191,6 +226,47 @@ struct SidebarView: View {
         }
     }
 
+    private var librarySearch: some View {
+        HStack(spacing: 7) {
+            Image(systemName: "magnifyingglass").foregroundStyle(SoriTheme.secondary)
+            TextField("검색", text: $store.search).textFieldStyle(.plain).focused($searchFocused)
+                .accessibilityLabel("\(store.collectionTitle)에서 제목, 전사문, 필기 검색")
+                .onSubmit { if let first = items.first { store.select(first.id); searchFocused = false; listFocused = true } }
+            if !store.search.isEmpty {
+                Button { store.search = ""; searchFocused = true } label: { Image(systemName: "xmark.circle.fill") }
+                    .buttonStyle(.plain).foregroundStyle(SoriTheme.secondary).help("검색 지우기")
+            }
+            Menu {
+                Picker("정렬", selection: $sort) { ForEach(LibrarySort.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
+                Divider()
+                Picker("상태", selection: $filter) { ForEach(LibraryFilter.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
+            } label: {
+                Image(systemName: filter == .all ? "line.3.horizontal.decrease" : "line.3.horizontal.decrease.circle.fill")
+                    .frame(width: 20, height: 22)
+            }.menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                .help("정렬 및 상태 필터 · \(sort.rawValue), \(filter.rawValue)").accessibilityLabel("녹음 정렬 및 상태 필터")
+        }.font(.system(size: 13)).foregroundStyle(SoriTheme.secondary)
+            .padding(.horizontal, 9).padding(.vertical, 5)
+            .background(SoriTheme.line.opacity(0.45), in: RoundedRectangle(cornerRadius: 6))
+            .help("제목, 전사문, 필기 검색 · ⇧⌘F")
+            .onExitCommand { store.search = ""; searchFocused = false }
+    }
+
+    private func recordingLinks(_ recordings: [Recording]) -> some View {
+        VStack(spacing: 2) {
+            if recordings.isEmpty {
+                Text(!query.isEmpty ? "검색 결과가 없습니다" : filter != .all ? "해당 상태의 녹음이 없습니다" : "아직 녹음이 없습니다")
+                    .font(.system(size: 13)).foregroundStyle(SoriTheme.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(.leading, 32).padding(.vertical, 12)
+            }
+            ForEach(recordings) { recording in
+                RecordingRow(store: store, recording: recording, selected: store.selectedID == recording.id,
+                             folder: store.projects.first { $0.id == recording.projectID }?.name, query: query)
+                    .padding(.leading, 20).id("collection-" + recording.id.uuidString)
+            }
+        }
+    }
+
     private func projectBranch(_ project: Project) -> some View {
         VStack(spacing: 2) {
             collectionRow(project.name, icon: expandedProjects.contains(project.id) ? "folder.fill" : "folder",
@@ -203,29 +279,15 @@ struct SidebarView: View {
                 }
             }.contextMenu { projectMenu(project) }
             if expandedProjects.contains(project.id) {
-                let items = store.recordings.filter { $0.projectID == project.id }.sorted { $0.createdAt > $1.createdAt }
+                let items = ordered(store.recordings.filter { $0.projectID == project.id })
                 if items.isEmpty {
                     Text("아직 녹음이 없어요").font(.system(size: 13)).foregroundStyle(SoriTheme.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading).padding(.leading, 43).padding(.vertical, 9)
                 } else {
                     ForEach(items) { recording in
-                        Button {
-                            store.selectedProjectID = project.id; store.favoritesOnly = false; store.search = ""
-                            store.select(recording.id)
-                        } label: {
-                            HStack(alignment: .top, spacing: 8) {
-                                Image(systemName: recording.status == .recording ? "record.circle" : "waveform")
-                                    .font(.system(size: 13)).frame(width: 16).padding(.top, 2)
-                                    .foregroundStyle(recording.status == .recording ? SoriTheme.recording : SoriTheme.secondary)
-                                Text(recording.title).font(.system(size: 14, weight: store.selectedID == recording.id ? .medium : .regular))
-                                    .lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
-                            }.padding(.leading, 37).padding(.trailing, 10).padding(.vertical, 9)
-                                .contentShape(Rectangle())
-                                .background(store.selectedID == recording.id ? SoriTheme.line.opacity(0.8) : .clear, in: RoundedRectangle(cornerRadius: 6))
-                        }.buttonStyle(.plain).help(recording.title)
-                            .accessibilityAddTraits(store.selectedID == recording.id ? [.isSelected] : [])
-                            .contextMenu { RecordingMenu(store: store, recording: recording) }
-                            .modifier(RecordingDragModifier(reference: .init(recordingID: recording.id, projectID: recording.projectID), enabled: store.canModify(recording.id)))
+                        RecordingRow(store: store, recording: recording, selected: store.selectedID == recording.id,
+                                     folder: project.name, query: "", selectProject: true)
+                            .padding(.leading, 29).id("folder-" + recording.id.uuidString)
                     }
                 }
             }
@@ -301,134 +363,13 @@ private enum LibraryFilter: String, CaseIterable {
     }
 }
 
-struct LibraryView: View {
-    @Bindable var store: AppStore
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @AppStorage("librarySort") private var sort = LibrarySort.newest
-    @State private var filter = LibraryFilter.all
-    @FocusState private var searchFocused: Bool
-    @FocusState private var listFocused: Bool
-
-    private var query: String { store.search.trimmingCharacters(in: .whitespacesAndNewlines) }
-    private var items: [Recording] {
-        store.visibleRecordings.filter { filter.includes($0, queued: store.queue.contains($0.id)) }.sorted {
-            switch sort {
-            case .newest: $0.createdAt > $1.createdAt
-            case .oldest: $0.createdAt < $1.createdAt
-            case .title: $0.title.localizedStandardCompare($1.title) == .orderedAscending
-            case .longest: $0.duration == $1.duration ? $0.createdAt > $1.createdAt : $0.duration > $1.duration
-            }
-        }
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text(store.collectionTitle).font(.system(size: 20, weight: .semibold)).lineLimit(1)
-                .padding(.horizontal, 22).padding(.top, 50).help(store.collectionTitle)
-            HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass").font(.system(size: 14)).foregroundStyle(SoriTheme.secondary)
-                TextField("검색", text: $store.search)
-                    .textFieldStyle(.plain).font(.system(size: 14)).focused($searchFocused)
-                    .accessibilityLabel("\(store.collectionTitle)에서 제목, 전사문, 메모 검색")
-                    .onSubmit { if let first = items.first { store.select(first.id); searchFocused = false; listFocused = true } }
-                if !store.search.isEmpty {
-                    Button { store.search = ""; searchFocused = true } label: { Image(systemName: "xmark.circle.fill") }
-                        .buttonStyle(.plain).foregroundStyle(SoriTheme.secondary).help("검색 지우기").accessibilityLabel("검색 지우기")
-                }
-            }.padding(.horizontal, 11).padding(.vertical, 9)
-                .help("제목, 전사문, 메모 검색 · ⇧⌘F")
-                .background(SoriTheme.sidebar, in: RoundedRectangle(cornerRadius: 6))
-                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(searchFocused ? SoriTheme.accent.opacity(0.55) : .clear))
-                .padding(.horizontal, 17).padding(.top, 21)
-                .onExitCommand { store.search = ""; searchFocused = false }
-            HStack(spacing: 8) {
-                Menu {
-                    Picker("정렬", selection: $sort) { ForEach(LibrarySort.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
-                } label: {
-                    Label(sort.rawValue, systemImage: "arrow.up.arrow.down").font(.system(size: 13))
-                }.menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().tint(SoriTheme.secondary).help("녹음 정렬")
-                Spacer(minLength: 0)
-                Menu {
-                    Picker("상태 필터", selection: $filter) { ForEach(LibraryFilter.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
-                } label: {
-                    Image(systemName: filter == .all ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
-                        .font(.system(size: 15)).foregroundStyle(filter == .all ? SoriTheme.secondary : SoriTheme.accent)
-                }.menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-                    .tint(filter == .all ? SoriTheme.secondary : SoriTheme.accent)
-                    .help("상태 필터: \(filter.rawValue)").accessibilityLabel("상태 필터: \(filter.rawValue)")
-            }.foregroundStyle(SoriTheme.secondary).padding(.horizontal, 22).padding(.top, 20).padding(.bottom, 13)
-            if filter != .all {
-                HStack(spacing: 6) {
-                    Text(filter.rawValue).font(.system(size: 13))
-                    Button { filter = .all } label: { Image(systemName: "xmark").font(.system(size: 13)) }
-                        .buttonStyle(.plain).help("상태 필터 해제").accessibilityLabel("상태 필터 해제")
-                }.foregroundStyle(SoriTheme.secondary).padding(.horizontal, 22).padding(.bottom, 12)
-            }
-            Rectangle().fill(SoriTheme.line.opacity(0.8)).frame(height: 1).padding(.horizontal, 20)
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(spacing: 2) {
-                        ForEach(items) { recording in
-                            RecordingRow(store: store, recording: recording, selected: store.selectedID == recording.id,
-                                         folder: store.selectedProjectID == nil && store.projects.count > 1 ? store.projects.first { $0.id == recording.projectID }?.name : nil,
-                                         query: query, keyboardFocused: listFocused && store.selectedID == recording.id)
-                                .id(recording.id)
-                        }
-                        if items.isEmpty { emptyState }
-                    }.padding(.horizontal, 11).padding(.vertical, 12)
-                }
-                .focusable().focused($listFocused).focusEffectDisabled()
-                .onChange(of: listFocused) { _, focused in
-                    if focused, !items.contains(where: { $0.id == store.selectedID }), let first = items.first {
-                        store.select(first.id)
-                    }
-                }
-                .onMoveCommand { direction in
-                    guard direction == .up || direction == .down, !items.isEmpty else { return }
-                    let index = items.firstIndex { $0.id == store.selectedID }
-                    let next = min(items.count - 1, max(0, (index ?? (direction == .down ? -1 : items.count)) + (direction == .down ? 1 : -1)))
-                    listFocused = true
-                    store.select(items[next].id)
-                    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) { proxy.scrollTo(items[next].id) }
-                }
-                .onChange(of: store.selectedID) { _, id in
-                    if let id, items.contains(where: { $0.id == id }) {
-                        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) { proxy.scrollTo(id) }
-                    }
-                }
-            }
-        }.background(SoriTheme.paper)
-            .onChange(of: store.selectedProjectID) { _, _ in filter = .all }
-            .onChange(of: store.favoritesOnly) { _, _ in filter = .all }
-            .onChange(of: store.recordingID) { _, id in if id != nil { filter = .all } }
-            .onChange(of: store.librarySearchRequested, initial: true) { _, requested in
-                if requested { searchFocused = true; store.librarySearchRequested = false }
-            }
-    }
-
-    private var emptyState: some View {
-        VStack(spacing: 12) {
-            Image(systemName: !query.isEmpty ? "magnifyingglass" : (filter != .all ? "line.3.horizontal.decrease.circle" : (store.favoritesOnly ? "star" : "waveform")))
-                .font(.system(size: 28, weight: .ultraLight)).padding(.bottom, 3)
-            Text(!query.isEmpty ? "검색 결과가 없습니다" : (filter != .all ? "해당 상태의 녹음이 없습니다" : (store.favoritesOnly ? "즐겨찾기가 없습니다" : "아직 녹음이 없습니다")))
-                .font(.system(size: 14, weight: .medium)).multilineTextAlignment(.center)
-            Text(!query.isEmpty ? "검색어를 바꾸거나 검색 조건을 지워 보세요." : (filter != .all ? "상태 필터를 해제해 다른 녹음을 확인하세요." : (store.favoritesOnly ? "녹음의 더 보기(…) 메뉴에서 ‘즐겨찾기에 추가’를 선택하세요." : "새로 녹음하거나 오디오 파일을 이 창에 끌어다 놓으세요.")))
-                .font(.system(size: 14)).lineSpacing(4).multilineTextAlignment(.center)
-            if !query.isEmpty || filter != .all {
-                Button(query.isEmpty ? "필터 해제" : (filter == .all ? "검색 지우기" : "검색 및 필터 지우기")) { store.search = ""; filter = .all }
-                    .font(.system(size: 14)).buttonStyle(.plain).foregroundStyle(SoriTheme.ink).padding(.top, 5)
-            }
-        }.foregroundStyle(SoriTheme.secondary).frame(maxWidth: .infinity).padding(.horizontal, 16).padding(.top, 48)
-    }
-}
-
 struct RecordingRow: View {
     @Bindable var store: AppStore
     let recording: Recording
     let selected: Bool
     let folder: String?
     let query: String
-    var keyboardFocused = false
+    var selectProject = false
     @State private var hovered = false
     @FocusState private var rowFocused: Bool
 
@@ -472,40 +413,28 @@ struct RecordingRow: View {
     }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Button { store.select(recording.id) } label: {
-                VStack(alignment: .leading, spacing: 7) {
-                    HStack(spacing: 6) {
-                        Text(recording.title).font(.system(size: 15, weight: .medium)).lineLimit(1)
-                        if recording.isFavorite { Image(systemName: "star.fill").font(.system(size: 13)).foregroundStyle(SoriTheme.secondary).fixedSize() }
+        Button {
+            if selectProject { store.selectedProjectID = recording.projectID; store.favoritesOnly = false; store.search = "" }
+            store.select(recording.id)
+        } label: {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: recording.status == .recording ? "record.circle" : recording.isFavorite ? "star" : "waveform")
+                    .font(.system(size: 13)).frame(width: 16).padding(.top, 2)
+                    .foregroundStyle(recording.status == .recording ? SoriTheme.recording : SoriTheme.secondary)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(recording.title).font(.system(size: 14, weight: selected ? .medium : .regular)).lineLimit(2)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if !query.isEmpty { previewText.font(.system(size: 12)).foregroundStyle(SoriTheme.secondary).lineLimit(2) }
+                    else if recording.status.isProcessing || recording.status == .failed || recording.work?.state == .interrupted {
+                        Text(statusTitle).font(.system(size: 12)).foregroundStyle(SoriTheme.secondary).lineLimit(1)
                     }
-                    if recording.status == .ready || recording.status == .reviewNeeded || !query.isEmpty {
-                        previewText.font(.system(size: 13)).foregroundStyle(SoriTheme.secondary).lineLimit(1)
-                    } else {
-                        Text(statusTitle).font(.system(size: 13))
-                            .foregroundStyle(recording.status == .failed ? SoriTheme.recording : SoriTheme.secondary)
-                    }
-                    HStack(spacing: 6) {
-                        Text(recording.createdAt.formatted(.dateTime.month().day().locale(Locale(identifier: "ko_KR"))))
-                            .fixedSize(horizontal: true, vertical: false)
-                        if let folder { Text("·"); Text(folder).lineLimit(1).help(folder) }
-                        Spacer(minLength: 4)
-                        if recording.duration > 0 {
-                            Text(TimeText.clock(recording.duration)).monospacedDigit().fixedSize(horizontal: true, vertical: false)
-                        }
-                    }.font(.system(size: 13)).foregroundStyle(SoriTheme.secondary).lineLimit(1)
-                }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-            }.buttonStyle(.plain).help(recording.title)
-                .focused($rowFocused).focusEffectDisabled()
-                .accessibilityLabel("\(recording.title), \(statusTitle), \(TimeText.clock(recording.duration))")
-                .accessibilityAddTraits(selected ? [.isSelected] : [])
-            Menu { RecordingMenu(store: store, recording: recording) } label: {
-                Image(systemName: "ellipsis").font(.system(size: 14)).frame(width: 24, height: 20)
-            }.menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().tint(SoriTheme.secondary)
-                .help("더 보기").accessibilityLabel("\(recording.title) 더 보기")
-        }.padding(.horizontal, 12).padding(.vertical, 12)
+                }
+            }.padding(.horizontal, 8).padding(.vertical, 9).contentShape(Rectangle())
+        }.buttonStyle(.plain).focused($rowFocused).focusEffectDisabled()
+            .help("\(recording.title)\n\(folder ?? "") · \(statusTitle) · \(TimeText.clock(recording.duration))")
+            .accessibilityLabel("\(recording.title), \(statusTitle), \(TimeText.clock(recording.duration))")
+            .accessibilityAddTraits(selected ? [.isSelected] : [])
             .background(selected ? SoriTheme.line.opacity(0.65) : (hovered ? SoriTheme.line.opacity(0.3) : .clear), in: RoundedRectangle(cornerRadius: 6))
-            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(keyboardFocused || rowFocused ? SoriTheme.accent.opacity(0.55) : .clear).allowsHitTesting(false))
             .contextMenu { RecordingMenu(store: store, recording: recording) }
             .modifier(RecordingDragModifier(reference: .init(recordingID: recording.id, projectID: recording.projectID), enabled: store.canModify(recording.id)))
             .onHover { hovered = $0 }
