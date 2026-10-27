@@ -2,6 +2,20 @@ import XCTest
 @testable import SoriCore
 
 final class LibraryTests: XCTestCase {
+    func testRecordingModesRemainCompatibleWithOlderLibraries() throws {
+        let legacy = Recording(projectID: UUID(), title: "기존 녹음")
+        let data = try JSONEncoder().encode(legacy)
+        XCTAssertFalse(String(decoding: data, as: UTF8.self).contains("recordingMode"))
+        XCTAssertFalse(try JSONDecoder().decode(Recording.self, from: data).recordsAudioOnly)
+
+        var audio = legacy
+        audio.recordingMode = .audioOnly; audio.status = .saved
+        var restored = try JSONDecoder().decode(Recording.self, from: JSONEncoder().encode(audio))
+        XCTAssertTrue(restored.recordsAudioOnly)
+        XCTAssertFalse(restored.recoverInterruptedWork())
+        XCTAssertEqual(restored.status, .saved); XCTAssertNil(restored.work)
+    }
+
     func testSummaryRetryIntentAndExistingEditsSurviveRepeatedLaunches() throws {
         let repo = try LibraryRepository(root: root)
         let project = try repo.createProject(name: "강의")

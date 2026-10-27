@@ -9,11 +9,16 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
     }
 }
 
+public enum RecordingMode: String, Codable, Sendable {
+    case lecture, audioOnly
+}
+
 public enum RecordingStatus: String, Codable, Sendable {
-    case recording, queued, transcribing, polishing, ready, reviewNeeded, noSpeech, failed
+    case recording, saved, queued, transcribing, polishing, ready, reviewNeeded, noSpeech, failed
     public var label: String {
         switch self {
         case .recording: "녹음 중"
+        case .saved: "녹음 저장됨"
         case .queued: "AI 정리 대기"
         case .transcribing, .polishing: "AI 정리 중"
         case .ready: "정리 완료"
@@ -77,6 +82,9 @@ public struct Recording: Codable, Identifiable, Equatable, Sendable {
     public var reviewRanges: [AudioReviewRange]?
     public var audioFileName: String?
     public var work: RecordingWork?
+    // Missing in older libraries means the original automatic lecture workflow.
+    public var recordingMode: RecordingMode?
+    public var recordsAudioOnly: Bool { recordingMode == .audioOnly }
 
     public init(id: UUID = UUID(), projectID: UUID, title: String, createdAt: Date = Date()) {
         self.id = id; self.projectID = projectID; self.title = title; self.createdAt = createdAt

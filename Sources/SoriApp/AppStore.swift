@@ -23,6 +23,7 @@ final class AppStore {
     var showSettings = false
     var settingsSection: SettingsSection = .speech
     var showRecordingDestination = false
+    private(set) var requestedRecordingMode: RecordingMode = .lecture
     var librarySearchRequested = false
     var recordingID: UUID?
     var processingID: UUID?
@@ -161,7 +162,7 @@ final class AppStore {
     }
 
     func canRename(_ id: UUID) -> Bool {
-        canModify(id) && recordings.contains { $0.id == id && $0.generatedTitle != nil }
+        canModify(id) && recordings.contains { $0.id == id && ($0.generatedTitle != nil || $0.recordsAudioOnly) }
     }
 
     func renameRecording(_ id: UUID, title: String) {
@@ -216,12 +217,13 @@ final class AppStore {
         } catch { errorMessage = error.localizedDescription }
     }
 
-    func requestRecording() {
+    func requestRecording(mode: RecordingMode = .lecture) {
         guard !audio.isRecording, !isStartingRecording, !isFinalizingRecording, !isTerminating, !isSleeping, !isPreparingForSleep, repository != nil else { return }
+        requestedRecordingMode = mode
         showRecordingDestination = true
     }
 
-    func startRecording(in projectID: UUID) async {
+    func startRecording(in projectID: UUID, mode: RecordingMode = .lecture) async {
         guard !audio.isRecording, !isStartingRecording, !isFinalizingRecording, !isTerminating, !isSleeping, !isPreparingForSleep, let repository else { return }
         isStartingRecording = true; defer { isStartingRecording = false }
         guard await audio.requestMicrophone() else {
@@ -233,8 +235,11 @@ final class AppStore {
             guard let project = projects.first(where: { $0.id == projectID }) else {
                 throw SoriError.message("녹음을 저장할 폴더가 없습니다. 폴더를 먼저 만들어 주세요.")
             }
-            let title = Date().formatted(.dateTime.month(.twoDigits).day(.twoDigits).hour().minute()) + " 녹음"
+            let title = mode == .audioOnly
+                ? project.name + " · " + Date().formatted(.dateTime.month(.twoDigits).day(.twoDigits).hour().minute())
+                : Date().formatted(.dateTime.month(.twoDigits).day(.twoDigits).hour().minute()) + " 녹음"
             var recording = try repository.createRecording(project: project, title: title)
+            recording.recordingMode = mode
             recording.status = .recording
             recording.work = .init(kind: .recording, state: .running)
             recordings.insert(recording, at: 0)
@@ -247,7 +252,7 @@ final class AppStore {
                 throw error
             }
             recordingID = recording.id
-            if settings.transcriptionReady {
+            if !recording.recordsAudioOnly && settings.transcriptionReady {
                 let live = LocalRecordingTranscription(audio: try repository.audioURL(for: recording),
                     directory: try repository.directory(for: recording), configuration: settings.transcriptionConfiguration)
                 let id = recording.id
@@ -269,7 +274,9 @@ final class AppStore {
         // Show that drain explicitly rather than briefly returning to an empty view.
         if processingID == nil {
             processingProgress = nil; processingStartedAt = Date(); processingIssues = []; processingCompletedSteps = []; processingSummaryOnly = false
-            updateProgress(.init(stage: .finishingRecording, detail: "녹음을 저장하고 처리 중인 음성 구간을 마무리합니다."), for: id)
+            if !recording.recordsAudioOnly {
+                updateProgress(.init(stage: .finishingRecording, detail: "녹음을 저장하고 처리 중인 음성 구간을 마무리합니다."), for: id)
+            }
         }
         defer {
             isFinalizingRecording = false; finalizingID = nil; finalizingTranscription = nil
@@ -279,10 +286,15 @@ final class AppStore {
         let live = liveTranscription; liveTranscription = nil
         finalizingTranscription = live
         let saved = update(id) {
-            $0.duration = duration; $0.status = .queued
-            $0.work = .init(kind: .transcription,
-                state: enqueueForTranscription && !self.isTerminating ? .queued : .interrupted,
-                cause: self.isTerminating ? .appClosed : enqueueForTranscription ? nil : .userStopped)
+            $0.duration = duration
+            if $0.recordsAudioOnly {
+                $0.status = .saved; $0.work = nil; $0.message = nil
+            } else {
+                $0.status = .queued
+                $0.work = .init(kind: .transcription,
+                    state: enqueueForTranscription && !self.isTerminating ? .queued : .interrupted,
+                    cause: self.isTerminating ? .appClosed : enqueueForTranscription ? nil : .userStopped)
+            }
         }
         await live?.finish(cancel: isTerminating)
         do {
@@ -291,9 +303,10 @@ final class AppStore {
             let inspectedSaved = update(id) { $0.duration = info.duration; $0.waveform = info.waveform }
             if selectedID == id { do { try audio.load(url) } catch { errorMessage = error.localizedDescription } }
             if info.duration < 0.3 { update(id) { $0.status = .failed; $0.message = "녹음이 너무 짧습니다. 1초 이상 녹음해 주세요." } }
-            else if saved && inspectedSaved && enqueueForTranscription && settings.transcriptionReady && !isTerminating {
+            else if saved && inspectedSaved && !recording.recordsAudioOnly && enqueueForTranscription && settings.transcriptionReady && !isTerminating {
                 finalizingID = nil; enqueue(id)
             }
+            else if saved && inspectedSaved && recording.recordsAudioOnly && !isTerminating { notify("녹음을 저장했습니다") }
         } catch { update(id) { $0.status = .failed; $0.message = error.localizedDescription } }
         return !unsavedIDs.contains(id)
     }
@@ -568,7 +581,7 @@ final class AppStore {
             $0.message = nil
         }
         if !audio.isPausedRecording, liveTranscription == nil, settings.transcriptionReady,
-           let item = recordings.first(where: { $0.id == id }), let repository {
+           let item = recordings.first(where: { $0.id == id }), !item.recordsAudioOnly, let repository {
             do {
                 let live = LocalRecordingTranscription(audio: try repository.audioURL(for: item),
                     directory: try repository.directory(for: item), configuration: settings.transcriptionConfiguration)
@@ -611,7 +624,10 @@ final class AppStore {
                 let info = try await Task.detached { try AudioEngine.inspect(source) }.value
                 guard update(id, {
                     $0.audioFileName = source.lastPathComponent; $0.duration = info.duration; $0.waveform = info.waveform
-                    $0.status = $0.segments.isEmpty ? .queued : $0.completedStatus
+                    if $0.recordsAudioOnly && $0.segments.isEmpty {
+                        $0.status = .saved; $0.work = nil
+                        $0.message = "녹음이 중단되기 전까지 저장된 음성을 복구했습니다."
+                    } else { $0.status = $0.segments.isEmpty ? .queued : $0.completedStatus }
                 }) else { continue }
                 if selectedID == id { try audio.load(source) }
             } catch {

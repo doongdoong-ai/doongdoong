@@ -90,19 +90,33 @@ struct SidebarView: View {
             HStack(spacing: 9) {
                 BrandMark(size: 24)
                 Text("둥둥이").font(.system(size: 18, weight: .semibold))
+                Spacer()
             }.padding(.top, 48).padding(.horizontal, 22)
 
             Button {
                 if store.audio.isRecording { Task { await store.stopRecording() } }
                 else { store.requestRecording() }
             } label: {
-                Label(store.audio.isRecording ? "녹음 마치기" : (store.isFinalizingRecording ? "저장 중…" : "새 녹음"),
+                Label(store.audio.isRecording ? "녹음 마치기" : (store.isFinalizingRecording ? "저장 중…" : "강의 기록하기"),
                       systemImage: store.audio.isRecording ? "stop.fill" : "plus")
                     .font(.system(size: 14, weight: .medium)).frame(maxWidth: .infinity).padding(.vertical, 6)
             }.buttonStyle(.borderedProminent).controlSize(.large).tint(store.audio.isRecording ? SoriTheme.recording : SoriTheme.ink)
                 .disabled(store.isStartingRecording || store.isFinalizingRecording || store.repository == nil)
-                .help(store.audio.isRecording ? "녹음 마치기 · ⌘R" : "저장할 폴더를 선택하고 새 녹음 · ⌘R")
+                .help(store.audio.isRecording ? "녹음 마치기 · ⌘R" : "녹음부터 전사문과 핵심 요약까지 · ⌘R")
                 .padding(.horizontal, 18).padding(.top, 26)
+
+            if !store.audio.isRecording && !store.isFinalizingRecording {
+                HStack(spacing: 4) {
+                    Button { store.requestRecording(mode: .audioOnly) } label: {
+                        Label("녹음하기", systemImage: "waveform")
+                            .font(.system(size: 13, weight: .medium))
+                            .padding(.horizontal, 6).padding(.vertical, 10).contentShape(Rectangle())
+                    }.buttonStyle(.plain).foregroundStyle(SoriTheme.secondary)
+                        .disabled(store.isStartingRecording || store.repository == nil)
+                        .help("음성만 저장하고, 필요할 때 정리 · ⌥⌘R")
+                    RecordingModeHelp()
+                }.frame(maxWidth: .infinity).padding(.horizontal, 18).padding(.top, 4)
+            }
 
             VStack(spacing: 2) {
                 collectionRow("모든 녹음", icon: "waveform", selected: store.selectedProjectID == nil && !store.favoritesOnly) { store.selectCollection(nil) }
@@ -268,10 +282,11 @@ private enum LibrarySort: String, CaseIterable {
 }
 
 private enum LibraryFilter: String, CaseIterable {
-    case all = "전체 상태", ready = "정리 완료", pending = "진행 · 대기", failed = "확인 필요"
+    case all = "전체 상태", saved = "녹음 저장됨", ready = "정리 완료", pending = "진행 · 대기", failed = "확인 필요"
     func includes(_ recording: Recording, queued: Bool) -> Bool {
         switch self {
         case .all: true
+        case .saved: recording.status == .saved
         case .ready: recording.status == .ready || recording.status == .noSpeech
         case .pending: recording.status == .recording || queued || recording.status.isProcessing
         case .failed: recording.status == .failed || recording.status == .reviewNeeded
@@ -439,6 +454,7 @@ struct RecordingRow: View {
         if recording.work?.state == .interrupted { return recording.id == store.recordingID ? "녹음 일시 정지" : "이어서 정리 가능" }
         return switch recording.status {
         case .recording: "녹음 중"
+        case .saved: "녹음 저장됨"
         case .queued: store.queue.contains(recording.id) ? "AI 정리 대기" : "음성 저장됨"
         case .transcribing, .polishing: "AI 정리 중"
         case .ready: "정리 완료"
@@ -516,6 +532,9 @@ struct RecordingMenu: View {
                 Button("타임코드 자막 (.srt)") { store.export(recording, format: "srt") }
                 Button("기록 데이터 (.json)") { store.export(recording, format: "json") }
             }
+        } else {
+            Button("텍스트로 정리", systemImage: "text.bubble") { store.enqueue(recording.id) }
+                .disabled(!store.canTranscribe(recording.id))
         }
         Divider()
         Button("휴지통으로 이동", systemImage: "trash", role: .destructive) { store.trash(recording) }.disabled(locked)
@@ -529,17 +548,17 @@ struct WelcomeView: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            Text("새 녹음").font(.system(size: 28, weight: .semibold))
-            Text("녹음하거나 파일을 가져와 시작하세요.")
+            Text("강의를 기록하세요").font(.system(size: 28, weight: .semibold))
+            Text("녹음부터 전사문과 핵심 요약까지 한곳에.")
                 .font(.system(size: 15)).foregroundStyle(SoriTheme.secondary)
             HStack(spacing: 12) {
                 Button { store.requestRecording() } label: {
-                    Label("녹음 시작", systemImage: "mic")
+                    Label("강의 기록하기", systemImage: "plus")
                 }.buttonStyle(.borderedProminent).tint(SoriTheme.ink)
                     .disabled(store.isStartingRecording || store.isFinalizingRecording || store.audio.isRecording || store.repository == nil)
-                Button { store.importAudio() } label: {
-                    Text("파일 가져오기")
-                }.buttonStyle(.bordered).tint(SoriTheme.ink).disabled(store.isImporting || store.repository == nil)
+                Button { store.requestRecording(mode: .audioOnly) } label: { Text("녹음하기") }
+                    .buttonStyle(.bordered).tint(SoriTheme.ink)
+                    .disabled(store.isStartingRecording || store.isFinalizingRecording || store.audio.isRecording || store.repository == nil)
             }.font(.system(size: 14)).controlSize(.large)
             Text("녹음 시작 전 저장할 폴더를 선택합니다.").font(.system(size: 14)).foregroundStyle(SoriTheme.secondary)
             if !store.settings.transcriptionReady {

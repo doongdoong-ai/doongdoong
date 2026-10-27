@@ -30,6 +30,102 @@ private actor RecoveryRecognizer: SpeechRecognizer {
 }
 
 final class InterruptionTests: XCTestCase {
+    @MainActor func testAudioOnlyStopSavesWithoutASRAndOrganizesOnlyOnRequest() async throws {
+        let root = root(); defer { cleanup(root) }
+        let repo = try LibraryRepository(root: root), project = try repo.createProject(name: "금융")
+        var item = try repo.createRecording(project: project, title: "금융 녹음")
+        item.recordingMode = .audioOnly
+        try repo.save(item)
+        try wave(finalized: true).write(to: repo.audioURL(for: item))
+        let settings = try settings(root), recognizer = RecoveryRecognizer(), provider = RecoveryProvider()
+        provider.blocking = false
+        let store = AppStore(root: root, settings: settings, recognizer: recognizer, textProvider: provider)
+        // Simulate a recorder completing a file without accessing the microphone.
+        store.update(item.id) { $0.status = .recording; $0.work = .init(kind: .recording, state: .running) }
+        store.recordingID = item.id; store.audio.isRecording = true; store.audio.recordingTime = 2
+        let saved = await store.stopRecording()
+        XCTAssertTrue(saved)
+        XCTAssertEqual(store.selected?.status, .saved)
+        XCTAssertNil(store.selected?.work)
+        XCTAssertTrue(store.queue.isEmpty); XCTAssertNil(store.processingID)
+        XCTAssertEqual(store.audio.duration, 2, accuracy: 0.01)
+        let callsBefore = await recognizer.calls
+        XCTAssertEqual(callsBefore, 0); XCTAssertTrue(provider.inputs.isEmpty)
+
+        store.renameRecording(item.id, title: "직접 붙인 제목")
+        let relaunched = AppStore(root: root, settings: settings, recognizer: recognizer, textProvider: provider)
+        await relaunched.recoverRecordings()
+        relaunched.systemWillSleep(); await relaunched.systemDidWake().value
+        XCTAssertEqual(relaunched.selected?.status, .saved)
+        XCTAssertNil(relaunched.selected?.work); XCTAssertNil(relaunched.processingID)
+        XCTAssertTrue(relaunched.queue.isEmpty)
+        XCTAssertEqual(relaunched.selected?.title, "직접 붙인 제목")
+
+        relaunched.enqueue(item.id)
+        let deadline = ContinuousClock.now.advanced(by: .seconds(8))
+        while relaunched.processingID != nil || !relaunched.queue.isEmpty {
+            guard ContinuousClock.now < deadline else { return XCTFail("On-demand transcription did not finish") }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let callsAfter = await recognizer.calls
+        XCTAssertEqual(callsAfter, 1)
+        XCTAssertEqual(relaunched.selected?.status, .ready)
+        XCTAssertFalse(relaunched.selected?.segments.isEmpty ?? true)
+        XCTAssertEqual(relaunched.selected?.title, "직접 붙인 제목")
+        XCTAssertEqual(relaunched.selected?.generatedTitle, "보존한 강의")
+        XCTAssertNil(relaunched.selected?.work)
+    }
+
+    @MainActor func testAudioOnlyTerminationDoesNotCreateInterruptedAIWork() async throws {
+        let root = root(); defer { cleanup(root) }
+        let repo = try LibraryRepository(root: root), project = try repo.createProject(name: "녹음")
+        var item = try repo.createRecording(project: project, title: "종료 시 저장")
+        item.recordingMode = .audioOnly; try repo.save(item)
+        try wave(finalized: true).write(to: repo.audioURL(for: item))
+        let settings = try settings(root), recognizer = RecoveryRecognizer()
+        let store = AppStore(root: root, settings: settings, recognizer: recognizer)
+        store.update(item.id) { $0.status = .recording; $0.work = .init(kind: .recording, state: .running) }
+        store.recordingID = item.id; store.audio.isRecording = true; store.audio.recordingTime = 2
+        let saved = await store.prepareForTermination()
+        XCTAssertTrue(saved)
+        let restored = try XCTUnwrap(repo.load().recordings.first)
+        XCTAssertEqual(restored.status, .saved); XCTAssertNil(restored.work)
+        XCTAssertTrue(restored.recordsAudioOnly)
+        let calls = await recognizer.calls
+        XCTAssertEqual(calls, 0)
+    }
+
+    @MainActor func testAudioOnlyCrashRecoveryRepairsFileWithoutSchedulingAI() async throws {
+        let root = root(); defer { cleanup(root) }
+        let repo = try LibraryRepository(root: root), project = try repo.createProject(name: "녹음")
+        var item = try repo.createRecording(project: project, title: "중단된 음성")
+        item.recordingMode = .audioOnly; item.status = .recording
+        item.work = .init(kind: .recording, state: .running); try repo.save(item)
+        let original = wave(finalized: false), url = try repo.audioURL(for: item)
+        try original.write(to: url)
+        let recognizer = RecoveryRecognizer(), store = AppStore(root: root, settings: try settings(root), recognizer: recognizer)
+        await store.recoverRecordings()
+        XCTAssertEqual(store.selected?.status, .saved); XCTAssertNil(store.selected?.work)
+        XCTAssertEqual(store.selected?.audioFileName, "audio-local-recovered.wav")
+        XCTAssertEqual(store.audio.duration, 2, accuracy: 0.01)
+        XCTAssertEqual(try Data(contentsOf: url), original)
+        XCTAssertTrue(store.canRename(item.id))
+        XCTAssertTrue(store.queue.isEmpty); XCTAssertNil(store.processingID)
+        let calls = await recognizer.calls
+        XCTAssertEqual(calls, 0)
+    }
+
+    @MainActor func testRecordingDestinationUsesExplicitModeWithoutChangingNextDefault() throws {
+        let root = root(); defer { cleanup(root) }
+        let store = AppStore(root: root, settings: try settings(root))
+        store.requestRecording(mode: .audioOnly)
+        XCTAssertTrue(store.showRecordingDestination)
+        XCTAssertEqual(store.requestedRecordingMode, .audioOnly)
+        store.showRecordingDestination = false
+        store.requestRecording()
+        XCTAssertEqual(store.requestedRecordingMode, .lecture)
+    }
+
     @MainActor private func settings(_ root: URL) throws -> AppSettings {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: root.lastPathComponent))
         defaults.set("/missing-codex", forKey: "codexPath")
