@@ -15,7 +15,6 @@ final class AppStore {
     var recordings: [Recording] = []
     var selectedID: UUID?
     var selectedProjectID: UUID?
-    var favoritesOnly = false
     var search = ""
     var transcriptSearch = ""
     var errorMessage: String?
@@ -87,6 +86,7 @@ final class AppStore {
             let repo = try LibraryRepository(root: root); repository = repo
             let loaded = try repo.load(); projects = loaded.projects; recordings = loaded.recordings
             if projects.isEmpty { projects = [try repo.createProject(name: "받은 녹음")] }
+            selectedProjectID = projects.first?.id
             if !repo.warnings.isEmpty { errorMessage = "일부 폴더를 읽지 못했습니다. 원본 파일은 그대로 보관됩니다.\n" + repo.warnings.joined(separator: "\n") }
         } catch { errorMessage = error.localizedDescription }
         audio.onRecordingError = { [weak self] error in
@@ -108,14 +108,9 @@ final class AppStore {
     var visibleRecordings: [Recording] {
         let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
         return recordings.filter {
-            (selectedProjectID == nil || $0.projectID == selectedProjectID) &&
-            (!favoritesOnly || $0.isFavorite) &&
-            (query.isEmpty || $0.title.localizedCaseInsensitiveContains(query) || $0.fullText.localizedCaseInsensitiveContains(query) || $0.notes.localizedCaseInsensitiveContains(query))
+            if query.isEmpty { return $0.projectID == selectedProjectID }
+            return $0.title.localizedCaseInsensitiveContains(query) || $0.fullText.localizedCaseInsensitiveContains(query) || $0.notes.localizedCaseInsensitiveContains(query)
         }.sorted { $0.createdAt > $1.createdAt }
-    }
-    var collectionTitle: String {
-        if favoritesOnly { return "즐겨찾기" }
-        return projects.first { $0.id == selectedProjectID }?.name ?? "모든 녹음"
     }
     var currentProjectName: String { projects.first { $0.id == selected?.projectID }?.name ?? "라이브러리" }
     var totalDuration: Double { recordings.reduce(0) { $0 + $1.duration } }
@@ -181,6 +176,7 @@ final class AppStore {
     }
 
     func select(_ id: UUID?) {
+        if let item = recordings.first(where: { $0.id == id }) { selectedProjectID = item.projectID }
         guard selectedID != id else { return }
         selectedID = id; transcriptSearch = ""; followPlayback = true
         audio.stopPlayback()
@@ -191,8 +187,9 @@ final class AppStore {
         } catch { errorMessage = error.localizedDescription }
     }
 
-    func selectCollection(_ project: UUID?, favorites: Bool = false) {
-        selectedProjectID = project; favoritesOnly = favorites; search = ""
+    func selectProject(_ project: UUID) {
+        guard projects.contains(where: { $0.id == project }) else { return }
+        selectedProjectID = project; search = ""
         if !visibleRecordings.contains(where: { $0.id == selectedID }) { select(visibleRecordings.first?.id) }
     }
 
@@ -200,7 +197,7 @@ final class AppStore {
         do {
             guard let repository else { return }
             let project = try repository.createProject(name: name)
-            projects.append(project); selectCollection(project.id)
+            projects.append(project); selectProject(project.id)
         } catch { errorMessage = error.localizedDescription }
     }
     func renameProject(_ project: Project, name: String) {
@@ -216,7 +213,7 @@ final class AppStore {
         do {
             guard let repository else { return }
             try repository.removeEmptyProject(project); projects.removeAll { $0.id == project.id }
-            selectCollection(nil)
+            if selectedProjectID == project.id, let next = projects.first { selectProject(next.id) }
         } catch { errorMessage = error.localizedDescription }
     }
 
@@ -314,7 +311,7 @@ final class AppStore {
                 }
                 liveTranscription = live; live.start()
             }
-            favoritesOnly = false; search = ""; selectedProjectID = project.id
+            search = ""; selectedProjectID = project.id
             selectedID = recording.id
         } catch { errorMessage = error.localizedDescription }
     }
@@ -423,7 +420,7 @@ final class AppStore {
                 try FileManager.default.moveItem(at: partial, to: destination)
                 let saved = update(recording.id) { $0.duration = info.duration; $0.waveform = info.waveform }
                 importingIDs.remove(recording.id)
-                selectedProjectID = project.id; favoritesOnly = false; search = ""; select(recording.id)
+                search = ""; select(recording.id)
                 if saved && settings.transcriptionReady { enqueue(recording.id) }
             } catch {
                 let message = error is CancellationError ? "가져오기를 중지했습니다. 원본 파일은 그대로 보관되어 있습니다."
@@ -745,7 +742,7 @@ final class AppStore {
             let moved = try repository.move(recording, to: project)
             if let index = recordings.firstIndex(where: { $0.id == recording.id }) { recordings[index] = moved }
             unsavedIDs.remove(recording.id)
-            if selectedID == recording.id { selectedProjectID = project.id; favoritesOnly = false; search = "" }
+            if selectedID == recording.id { selectedProjectID = project.id; search = "" }
             return true
         } catch { errorMessage = error.localizedDescription; return false }
     }
@@ -798,7 +795,7 @@ final class AppStore {
     }
     func addDemo() async {
         guard !isAddingDemo, !isTerminating else { return }
-        if let existing = recordings.first(where: \.isDemo) { selectedProjectID = nil; favoritesOnly = false; select(existing.id); return }
+        if let existing = recordings.first(where: \.isDemo) { search = ""; select(existing.id); return }
         guard let repository else { return }
         isAddingDemo = true; defer { isAddingDemo = false }
         do {
@@ -819,7 +816,7 @@ final class AppStore {
             }
             item.notes = "둥둥이의 기능을 둘러보기 위한 합성 음성 샘플입니다.\n\n문장을 클릭하면 해당 위치부터 들을 수 있습니다. 필기는 클릭해서 바로 수정할 수 있습니다."
             try repository.save(item); recordings.insert(item, at: 0)
-            selectedProjectID = nil; favoritesOnly = false; select(item.id)
+            search = ""; select(item.id)
         } catch { errorMessage = error.localizedDescription }
     }
 }

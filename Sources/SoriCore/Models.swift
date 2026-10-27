@@ -72,6 +72,7 @@ public struct Recording: Codable, Identifiable, Equatable, Sendable {
     /// Legacy metadata retained when saving older recordings. No app feature uses it.
     public var bookmarks: [Bookmark]
     public var notes: String
+    /// Legacy metadata retained when saving older recordings. No app feature uses it.
     public var isFavorite: Bool
     public var waveform: [Float]
     public var message: String?
