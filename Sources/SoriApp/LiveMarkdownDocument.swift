@@ -190,6 +190,35 @@ extension NSAttributedString.Key {
     override init() { super.init(); backgroundLayoutEnabled = false; delegate = self }
     required init?(coder: NSCoder) { super.init(coder: coder); backgroundLayoutEnabled = false; delegate = self }
 
+    override func processEditing(for textStorage: NSTextStorage, edited editMask: NSTextStorageEditActions,
+                                 range newRange: NSRange, changeInLength delta: Int, invalidatedRange: NSRange) {
+        if editMask.contains(.editedCharacters) {
+            // IME edits keep coming while Markdown styling is suspended. Move
+            // source positions before TextKit generates glyphs for the new text.
+            let oldRange = NSRange(location: newRange.location, length: max(0, newRange.length - delta))
+            hidden.remove(integersIn: oldRange.location..<NSMaxRange(oldRange))
+            hidden.shift(startingAt: NSMaxRange(oldRange), by: delta)
+            func shifted(_ range: NSRange) -> NSRange {
+                let start = range.location < oldRange.location ? range.location :
+                    range.location >= NSMaxRange(oldRange) ? range.location + delta : newRange.location
+                let end = NSMaxRange(range) <= oldRange.location ? NSMaxRange(range) :
+                    NSMaxRange(range) >= NSMaxRange(oldRange) ? NSMaxRange(range) + delta : NSMaxRange(newRange)
+                return NSRange(location: max(0, start), length: max(0, end - start))
+            }
+            markers = markers.compactMap { marker in
+                // The edited line is plain source until composition finishes.
+                guard NSIntersectionRange(marker.line, oldRange).length == 0,
+                      !(oldRange.length == 0 && NSLocationInRange(oldRange.location, marker.line)) else { return nil }
+                return .init(kind: marker.kind, line: shifted(marker.line), content: shifted(NSRange(location: marker.content, length: 0)).location,
+                             prefix: shifted(marker.prefix), indent: marker.indent,
+                             taskIndex: marker.taskIndex.map { shifted(NSRange(location: $0, length: 0)).location })
+            }
+            codeBlocks = codeBlocks.map { .init(range: shifted($0.range), fences: $0.fences.map(shifted)) }
+        }
+        super.processEditing(for: textStorage, edited: editMask, range: newRange,
+                             changeInLength: delta, invalidatedRange: invalidatedRange)
+    }
+
     func layoutManager(_ layoutManager: NSLayoutManager, shouldGenerateGlyphs glyphs: UnsafePointer<CGGlyph>,
                        properties props: UnsafePointer<NSLayoutManager.GlyphProperty>, characterIndexes: UnsafePointer<Int>,
                        font: NSFont, forGlyphRange range: NSRange) -> Int {

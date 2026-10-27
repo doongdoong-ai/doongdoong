@@ -7,7 +7,7 @@ import SoriCore
         guard arguments.contains("--recording-only-preview") || arguments.contains("--workspace-preview") || arguments.contains("--saved-notes-preview"),
               let id = store.selectedID, let index = store.recordings.firstIndex(where: { $0.id == id }) else { return }
         if arguments.contains("--saved-notes-preview") {
-            store.recordings[index].notes = sampleNotes
+            store.recordings[index].notes = arguments.contains("--notes-composing-preview") ? "## 수업 필기\n\n\n\n- [ ] 복습하기" : sampleNotes
             store.recordings[index].title = "금융 세계화와 자본 통제"
             store.showNotes = true
             return
@@ -65,12 +65,21 @@ import SoriCore
     """
 
     static func prepareEditor(in view: NSView, arguments: [String]) {
-        guard arguments.contains("--live-edit-preview") else { return }
+        guard arguments.contains("--live-edit-preview") || arguments.contains("--notes-composing-preview") else { return }
         func find(_ view: NSView) -> MarkdownTextView? {
             if let text = view as? MarkdownTextView { return text }
             return view.subviews.lazy.compactMap { find($0) }.first
         }
         guard let editor = find(view) else { return }
+        if arguments.contains("--notes-composing-preview") {
+            _ = editor.becomeFirstResponder()
+            editor.setSelectedRange(NSRange(location: ("## 수업 필기\n\n" as NSString).length, length: 0))
+            let text = "한글을 입력하는 중에도 바로 보여야 합니다"
+            editor.setMarkedText(NSAttributedString(string: text, attributes: [.underlineStyle: NSUnderlineStyle.single.rawValue]),
+                                 selectedRange: NSRange(location: (text as NSString).length, length: 0),
+                                 replacementRange: NSRange(location: NSNotFound, length: 0))
+            return
+        }
         editor.setSelectedRange((editor.string as NSString).range(of: "단기 자본의 이동"))
         _ = editor.becomeFirstResponder()
         editor.highlight()

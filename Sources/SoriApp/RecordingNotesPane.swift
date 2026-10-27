@@ -62,8 +62,8 @@ struct RecordingNotesPane: View {
 
             HStack(spacing: 6) {
                 let failed = store.unsavedIDs.contains(recording.id)
-                Image(systemName: failed ? "exclamationmark.circle" : draft.isDirty ? "ellipsis" : "checkmark")
-                Text(failed ? "저장하지 못했습니다" : draft.isDirty ? "저장 중…" : "자동 저장됨")
+                Image(systemName: failed ? "exclamationmark.circle" : "checkmark")
+                Text(failed ? "저장하지 못했습니다" : "자동 저장됨")
                 if failed { Button("다시 저장") { draft.flush() }.buttonStyle(.plain).underline() }
                 Spacer()
                 Button { showHelp.toggle() } label: { Image(systemName: "questionmark.circle").frame(width: 24, height: 24) }

@@ -32,6 +32,7 @@ struct MarkdownNotesEditor: NSViewRepresentable {
         let editor = MarkdownTextView(frame: scroll.bounds, textContainer: container)
         editor.isEditable = true; editor.isSelectable = true; editor.isRichText = false
         editor.drawsBackground = false; editor.focusRingType = .none; editor.allowsUndo = true
+        editor.font = .systemFont(ofSize: 16); editor.textColor = NSColor(SoriTheme.ink)
         editor.isVerticallyResizable = true; editor.isHorizontallyResizable = false
         editor.autoresizingMask = [.width]
         container.widthTracksTextView = true; container.heightTracksTextView = false
@@ -72,7 +73,7 @@ struct MarkdownNotesEditor: NSViewRepresentable {
         }
         func textDidChange(_ notification: Notification) {
             guard let editor = notification.object as? MarkdownTextView else { return }
-            parent.text = editor.string; editor.scheduleHighlight()
+            parent.text = editor.string; editor.scheduleHighlight(); editor.needsDisplay = true
         }
         func textViewDidChangeSelection(_ notification: Notification) {
             (notification.object as? MarkdownTextView)?.highlight()
@@ -235,7 +236,13 @@ final class MarkdownTextView: NSTextView {
             storage.setAttributes(attributes, range: range)
         }
         storage.endEditing()
+        // Styling replaces the IME's Korean fallback font with the system font.
+        // Resolve coverage before regenerating glyphs; otherwise Hangul can stay
+        // as zero/null glyphs until the editor is reloaded.
+        storage.fixFontAttribute(in: NSRange(location: 0, length: storage.length))
         layoutManager?.invalidateGlyphs(forCharacterRange: NSRange(location: 0, length: storage.length), changeInLength: 0, actualCharacterRange: nil)
+        layoutManager?.invalidateLayout(forCharacterRange: NSRange(location: 0, length: storage.length), actualCharacterRange: nil)
+        layoutManager?.invalidateDisplay(forCharacterRange: NSRange(location: 0, length: storage.length))
         typingAttributes = MarkdownStyle.body
         if let origin, let scroll = enclosingScrollView {
             scroll.contentView.scroll(to: origin); scroll.reflectScrolledClipView(scroll.contentView)

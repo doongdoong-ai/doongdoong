@@ -4,6 +4,43 @@ import XCTest
 @testable import SoriApp
 
 @MainActor final class LiveMarkdownTests: XCTestCase {
+    func testKoreanCompositionHasVisibleGlyphsBeforeCommit() throws {
+        for initial in ["", "# 제목\n\n본문 **중요**\n\n- [ ] 복습"] {
+            var value = initial
+            let controller = MarkdownEditorController()
+            let view = MarkdownNotesEditor(text: Binding(get: { value }, set: { value = $0 }), controller: controller)
+            let coordinator = view.makeCoordinator(), scroll = view.makeScrollView(coordinator: coordinator)
+            scroll.frame = NSRect(x: 0, y: 0, width: 620, height: 400)
+            scroll.tile(); scroll.layoutSubtreeIfNeeded()
+            let editor = try XCTUnwrap(controller.textView), layout = try XCTUnwrap(editor.layoutManager)
+            let container = try XCTUnwrap(editor.textContainer)
+            _ = editor.becomeFirstResponder()
+            editor.setSelectedRange(NSRange(location: 0, length: 0))
+            for syllable in ["ㅎ", "하", "한", "한국", "한국어", "한국어를 입력하는 동안에도 바로 보여야 합니다", "한국", "한글"] {
+                editor.setMarkedText(syllable, selectedRange: NSRange(location: (syllable as NSString).length, length: 0),
+                                     replacementRange: NSRange(location: NSNotFound, length: 0))
+                coordinator.update(view, scroll: scroll)
+                XCTAssertTrue(editor.hasMarkedText())
+                let marked = editor.markedRange()
+                layout.ensureLayout(for: container)
+                let glyphs = layout.glyphRange(forCharacterRange: marked, actualCharacterRange: nil)
+                XCTAssertGreaterThan(layout.boundingRect(forGlyphRange: glyphs, in: container).width, 0)
+                for glyph in glyphs.location..<NSMaxRange(glyphs) {
+                    XCTAssertFalse(layout.propertyForGlyph(at: glyph).contains(.null), "Hidden composing glyph: \(syllable)")
+                    XCTAssertNotEqual(layout.cgGlyph(at: glyph), 0)
+                }
+            }
+            editor.insertText("한글", replacementRange: NSRange(location: NSNotFound, length: 0))
+            editor.highlight()
+            XCTAssertFalse(editor.hasMarkedText())
+            XCTAssertEqual(value, "한글" + initial)
+            layout.ensureLayout(for: container)
+            let composingGlyphs = layout.glyphRange(forCharacterRange: NSRange(location: 0, length: 2), actualCharacterRange: nil)
+            for glyph in composingGlyphs.location..<NSMaxRange(composingGlyphs) {
+                XCTAssertFalse(layout.propertyForGlyph(at: glyph).contains(.null))
+            }
+        }
+    }
     private func visible(_ doc: LiveMarkdownDocument, selection: NSRange? = nil) -> String {
         let hidden = doc.presentation(selection: selection).hidden
         return String(decoding: Array(doc.source.utf16).enumerated().filter { !hidden.contains($0.offset) }.map(\.element), as: UTF16.self)
