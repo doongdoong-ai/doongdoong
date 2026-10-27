@@ -41,7 +41,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             captureOffscreen(args: args, path: args[index + 1])
             return
         }
-        store.settings.refreshAIConnection()
+        if store.settings.analysisEnabled {
+            store.settings.refreshAIConnection(presentOnFailure: !store.settings.hasCompletedAISetup)
+        }
         store.settings.refreshSpeechAvailability()
         let workspace = NSWorkspace.shared.notificationCenter
         workspace.addObserver(self, selector: #selector(systemWillSleep), name: NSWorkspace.willSleepNotification, object: nil)
@@ -82,7 +84,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     }
 
     private func captureOffscreen(args: [String], path: String) {
-        if args.contains("--settings-preview") || args.contains("--providers-preview") { store.settings.refreshAIConnection() }
+        if args.contains("--settings-preview") || args.contains("--providers-preview") || args.contains("--connection-preview") { store.settings.refreshAIConnection() }
         if args.contains("--notes-preview") { store.showNotes = true }
         if args.contains("--focus-preview") { store.focusMode = true }
         // Give the bundled demo time to load, then construct the view from its final state.
@@ -162,6 +164,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                 size = NSSize(width: 330, height: 350)
                 content = AnyView(RecordingModeHelpContent().frame(maxHeight: .infinity).background(SoriTheme.paper))
             }
+            if args.contains("--connection-preview") { content = AnyView(AIConnectionSetupView(store: self.store)); size = NSSize(width: 480, height: args.contains("--connection-install-preview") ? 410 : 350) }
             let view = NSHostingView(rootView: content.frame(width: size.width, height: size.height).environment(\.displayScale, 2).preferredColorScheme(.light).tint(SoriTheme.accent))
             view.appearance = NSAppearance(named: .aqua)
             view.frame = NSRect(origin: .zero, size: size)

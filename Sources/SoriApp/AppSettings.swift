@@ -17,21 +17,34 @@ final class AppSettings {
     var requestTimeout: Double { didSet { defaults.set(requestTimeout, forKey: "codexRequestTimeout") } }
     private let defaults: UserDefaults
     private let speechAvailabilityResolver: @Sendable (SpeechConfiguration) async -> SpeechAvailability
-    private let catalogResolver: @MainActor (URL) async throws -> CodexCatalog
+    struct ConnectionVerification {
+        let catalog: CodexCatalog?
+        let result: Result<TextProviderIdentity, ProviderConnectionIssue>
+    }
+    typealias ConnectionVerifier = @MainActor (URL, String, ReasoningEffort) async throws -> ConnectionVerification
+    typealias BrowserLogin = @MainActor (URL, @escaping @MainActor (URL) -> Bool) async throws -> Void
+    private let connectionVerifier: ConnectionVerifier
+    private let browserLogin: BrowserLogin
     private(set) var catalog: CodexCatalog?
     private(set) var lastConnectionCheck: Date?
     private(set) var connectionState: AIConnectionState = .unchecked
     private var connectionTask: Task<Void, Never>?
     private var connectionGeneration = UUID()
+    var showConnectionSetup = false
+    private(set) var hasCompletedAISetup: Bool
 
     enum AIConnectionState: Equatable {
-        case unchecked, checking, ready(CodexModel), loginRequired, unavailable, failed
+        case unchecked, checking, signingIn, ready(CodexModel), blocked(ProviderConnectionIssue)
+    }
+    var connectionIssue: ProviderConnectionIssue? {
+        if case .blocked(let issue) = connectionState { return issue }
+        return nil
     }
     var selectedModel: CodexModel? {
         if case .ready(let model) = connectionState { return model }
         return nil
     }
-    var checkingAI: Bool { connectionState == .checking }
+    var checkingAI: Bool { connectionState == .checking || connectionState == .signingIn }
     var availableModels: [CodexModelOption] { catalog?.models ?? [] }
     var availableReasoningEfforts: [ReasoningEffort] {
         let preferred = CodexModel(rawValue: preferredModelID)
@@ -41,71 +54,116 @@ final class AppSettings {
         }
     }
     private func selectFromCatalog() {
-        guard let catalog else { return }
-        do { connectionState = .ready(try catalog.select(preferred: CodexModel(rawValue: preferredModelID), effort: reasoningEffort)) }
-        catch { connectionState = .unavailable }
-    }
-    var aiConnectionMessage: String {
-        switch connectionState {
-        case .unchecked: "AI 연결을 확인해 주세요."
-        case .checking: "ChatGPT 로그인과 모델 목록을 확인하고 있어요."
-        case .ready: "ChatGPT 로그인과 모델 목록을 확인했습니다."
-        case .loginRequired: "ChatGPT 계정으로 로그인해 주세요. API 키 로그인은 사용할 수 없습니다."
-        case .unavailable: "선택한 모델과 추론 강도를 목록에서 확인하지 못했습니다. 설정을 변경하거나 다시 연결해 주세요."
-        case .failed: "AI 연결을 확인하지 못했습니다. 연결 상태를 확인한 뒤 다시 시도해 주세요."
-        }
-    }
-
-    /// Session-only selection: recheck on every normal app launch and CLI path change.
-    @discardableResult func refreshAIConnection() -> Task<Void, Never>? {
+        // Catalog membership cannot verify the newly selected configuration.
+        // Invalidate immediately; the user can explicitly check the new choice.
         cancelAIConnectionCheck()
-        catalog = nil
-        guard codexReady else { connectionState = .failed; return nil }
+    }
+    var aiConnectionMessage: String { AIConnectionPresentation(state: connectionState).message }
+
+    /// One bounded check per launch or explicit retry, never a retry loop.
+    @discardableResult func refreshAIConnection(presentOnFailure: Bool = false) -> Task<Void, Never>? {
+        cancelAIConnectionCheck()
         connectionState = .checking
+        catalog = nil
         let generation = connectionGeneration
-        let executable = URL(fileURLWithPath: codexPath)
-        let resolve = catalogResolver
+        let executable = URL(fileURLWithPath: codexPath), preferred = preferredModelID, effort = reasoningEffort
+        let verify = connectionVerifier
         connectionTask = Task { [weak self] in
-            let state: AIConnectionState
-            var resolved: CodexCatalog?
-            do {
-                let value = try await resolve(executable)
-                resolved = value
-                guard let self, self.connectionGeneration == generation, !Task.isCancelled else { return }
-                state = .ready(try value.select(preferred: CodexModel(rawValue: self.preferredModelID), effort: self.reasoningEffort))
-            }
+            let verification: ConnectionVerification
+            do { verification = try await verify(executable, preferred, effort) }
             catch {
-                if Task.isCancelled || error is CancellationError { return }
-                switch error as? CodexModelDiscovery.DiscoveryError {
-                case .loginRequired: state = .loginRequired
-                case .noSupportedModel: state = .unavailable
-                default: state = .failed
-                }
+                guard let self, self.connectionGeneration == generation else { return }
+                self.connectionTask = nil
+                if Task.isCancelled || error is CancellationError { self.connectionState = .unchecked; return }
+                // Defensive boundary for future providers violating the typed contract.
+                self.connectionState = .blocked((error as? ProviderConnectionIssue) ?? .init(.unknown, stage: .probe))
+                self.lastConnectionCheck = Date()
+                if presentOnFailure && self.analysisEnabled { self.showConnectionSetup = true }
+                return
             }
             guard let self, !Task.isCancelled, self.connectionGeneration == generation else { return }
-            self.connectionState = state
-            self.catalog = resolved
-            self.lastConnectionCheck = Date()
-            self.connectionTask = nil
+            self.catalog = verification.catalog
+            switch verification.result {
+            case .success(let identity):
+                guard identity.provider == "codex", identity.reasoningEffort == effort.rawValue,
+                      let model = CodexModel(rawValue: identity.model),
+                      preferred.isEmpty || preferred == identity.model else {
+                    self.connectionState = .blocked(.init(.invalidResponse, stage: .probe))
+                    if presentOnFailure && self.analysisEnabled { self.showConnectionSetup = true }
+                    self.connectionTask = nil; return
+                }
+                self.connectionState = .ready(model)
+                self.hasCompletedAISetup = true
+                self.defaults.set(true, forKey: "aiSetup.codex.completed")
+            case .failure(let issue):
+                self.connectionState = .blocked(issue)
+                if presentOnFailure && self.analysisEnabled { self.showConnectionSetup = true }
+            }
+            self.lastConnectionCheck = Date(); self.connectionTask = nil
         }
         return connectionTask
     }
 
+    @discardableResult func signIn(openBrowser: @escaping @MainActor (URL) -> Bool) -> Task<Void, Never> {
+        cancelAIConnectionCheck()
+        connectionState = .signingIn
+        let generation = connectionGeneration, executable = URL(fileURLWithPath: codexPath), login = browserLogin
+        let task = Task { [weak self] in
+            do {
+                try await login(executable, openBrowser)
+                guard let self, !Task.isCancelled, self.connectionGeneration == generation else { return }
+                // A browser callback alone never marks setup complete.
+                self.connectionTask = nil
+                await self.refreshAIConnection()?.value
+            } catch {
+                guard let self, self.connectionGeneration == generation else { return }
+                self.connectionTask = nil
+                if Task.isCancelled || error is CancellationError { self.connectionState = .unchecked; return }
+                self.connectionState = .blocked((error as? ProviderConnectionIssue) ?? .init(.unknown, stage: .login))
+            }
+        }
+        connectionTask = task
+        return task
+    }
+
+    func presentConnectionSetup() {
+        showConnectionSetup = true
+        if connectionState == .unchecked || (selectedModel != nil && !codexReady) { refreshAIConnection() }
+    }
+    func dismissConnectionSetup() {
+        if checkingAI { cancelAIConnectionCheck() }
+        showConnectionSetup = false
+    }
     func cancelAIConnectionCheck() {
         connectionGeneration = UUID()
         connectionTask?.cancel(); connectionTask = nil
         connectionState = .unchecked
     }
 
+    static func verifyCodex(executable: URL, preferred: String, effort: ReasoningEffort) async throws -> ConnectionVerification {
+        if !preferred.isEmpty && CodexModel(rawValue: preferred) == nil {
+            return .init(catalog: nil, result: .failure(.init(.configuration, stage: .catalog, retry: .afterUserAction)))
+        }
+        let connection = CodexConnection(executable: executable, preferredModel: CodexModel(rawValue: preferred), reasoningEffort: effort)
+        do {
+            let identity = try await connection.verifyConnection()
+            return .init(catalog: connection.catalog, result: .success(identity))
+        }
+        catch {
+            if error is CancellationError || Task.isCancelled { throw CancellationError() }
+            return .init(catalog: connection.catalog, result: .failure((error as? ProviderConnectionIssue) ?? .init(.unknown, stage: .probe)))
+        }
+    }
+
     init(defaults: UserDefaults = .standard,
-         modelResolver: (@MainActor (URL) async throws -> CodexModel)? = nil,
-         catalogResolver: @escaping @MainActor (URL) async throws -> CodexCatalog = { try await CodexModelDiscovery.catalog(executable: $0) },
+         connectionVerifier: @escaping ConnectionVerifier = AppSettings.verifyCodex,
+         browserLogin: @escaping BrowserLogin = { try await CodexBrowserLogin.signIn(executable: $0, openBrowser: $1) },
          speechAvailabilityResolver: @escaping @Sendable (SpeechConfiguration) async -> SpeechAvailability = { await AppleSpeechEngine.availability(configuration: $0) }) {
         self.defaults = defaults
         self.speechAvailabilityResolver = speechAvailabilityResolver
-        if let modelResolver {
-            self.catalogResolver = { url in .init(models: [.init(model: try await modelResolver(url), reasoningEfforts: [.medium])]) }
-        } else { self.catalogResolver = catalogResolver }
+        self.connectionVerifier = connectionVerifier
+        self.browserLogin = browserLogin
+        hasCompletedAISetup = defaults.bool(forKey: "aiSetup.codex.completed")
         if let legacy = UserDefaults(suiteName: "app.sori.mac") {
             for key in ["language", "codexPath", "ffmpegPath"] where defaults.object(forKey: key) == nil {
                 if let value = legacy.object(forKey: key) { defaults.set(value, forKey: key) }

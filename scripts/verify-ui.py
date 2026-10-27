@@ -17,6 +17,10 @@ import tempfile
 
 
 SCENARIOS = (
+    ("connection-unknown", ("--connection-preview",), False, (960, 700)),
+    ("connection-login", ("--connection-preview", "--connection-login-preview"), False, (960, 700)),
+    ("connection-install", ("--connection-preview", "--connection-install-preview"), False, (960, 820)),
+    ("connection-quota", ("--connection-preview", "--connection-quota-preview"), False, (960, 700)),
     ("preview", (), True, (2560, 1640)),
     ("minimum", ("--minimum-window",), True, (2000, 1340)),
     ("notes", ("--notes-preview",), True, (2560, 1640)),
