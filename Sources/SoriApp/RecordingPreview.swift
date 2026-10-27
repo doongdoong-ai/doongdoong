@@ -11,8 +11,7 @@ import SoriCore
             store.recordings[index].title = "금융 세계화와 자본 통제"
             store.showNotes = true
             if arguments.contains("--library-search-preview") { store.search = "금융" }
-            if arguments.contains("--favorites-preview") { store.recordings[index].isFavorite = true; store.favoritesOnly = true }
-            if arguments.contains("--folder-library-preview") { store.selectCollection(store.recordings[index].projectID) }
+            if arguments.contains("--folder-library-preview") { store.selectProject(store.recordings[index].projectID) }
             return
         }
         store.recordings[index].recordingMode = .audioOnly

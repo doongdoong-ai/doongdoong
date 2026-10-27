@@ -28,7 +28,6 @@ SCENARIOS = (
     ("saved-notes-editing", ("--saved-notes-preview", "--live-edit-preview"), True, (2560, 1640)),
     ("notes-composing", ("--saved-notes-preview", "--notes-composing-preview"), True, (2560, 1640)),
     ("sidebar-library-search", ("--saved-notes-preview", "--library-search-preview", "--minimum-window"), True, (2000, 1340)),
-    ("sidebar-favorites", ("--saved-notes-preview", "--favorites-preview", "--minimum-window"), True, (2000, 1340)),
     ("sidebar-folder", ("--saved-notes-preview", "--folder-library-preview", "--minimum-window"), True, (2000, 1340)),
     ("sidebar-ai-ready", ("--sidebar-ai-preview",), True, (2560, 1640)),
     ("sidebar-ai-checking", ("--sidebar-ai-preview", "--sidebar-ai-checking-preview", "--minimum-window"), True, (2000, 1340)),
