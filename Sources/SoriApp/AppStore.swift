@@ -321,6 +321,10 @@ final class AppStore {
 
     @discardableResult func stopRecording(enqueueForTranscription: Bool = true) async -> Bool {
         guard !isFinalizingRecording, let id = recordingID, let recording = recordings.first(where: { $0.id == id }), let repository else { return true }
+        // Flush the editor before its workspace leaves the view tree, including
+        // stops initiated by the menu or the application termination path.
+        NotificationCenter.default.post(name: Notification.Name("BungBungiWillSave"), object: nil)
+        if recordings.first(where: { $0.id == id })?.notes.isEmpty == false { showNotes = true }
         isFinalizingRecording = true; finalizingID = id
         // The live ASR request can still be finishing when the microphone stops.
         // Show that drain explicitly rather than briefly returning to an empty view.

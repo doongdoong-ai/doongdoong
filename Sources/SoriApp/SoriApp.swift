@@ -214,6 +214,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             let item = NSMenuItem(title: title, action: Selector(selector), keyEquivalent: key)
             edit.addItem(item)
         }
+        let redo = NSMenuItem(title: "실행 복귀", action: Selector(("redo:")), keyEquivalent: "z")
+        redo.keyEquivalentModifierMask = [.command, .shift]
+        edit.insertItem(redo, at: 1)
+        edit.addItem(.separator())
+        edit.addItem(NSMenuItem(title: "굵게", action: #selector(MarkdownTextView.markdownBold(_:)), keyEquivalent: "b"))
+        edit.addItem(NSMenuItem(title: "기울임", action: #selector(MarkdownTextView.markdownItalic(_:)), keyEquivalent: "i"))
         edit.addItem(.separator())
         add("전사문에서 찾기", to: edit, action: #selector(findTranscript), key: "f")
         add("보관함에서 찾기", to: edit, action: #selector(findLibrary), key: "f", modifiers: [.command, .shift])

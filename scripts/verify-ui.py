@@ -17,6 +17,12 @@ import tempfile
 
 
 SCENARIOS = (
+    ("recording-workspace", ("--workspace-preview",), True, (2560, 1640)),
+    ("recording-workspace-minimum", ("--workspace-preview", "--minimum-window"), True, (2000, 1340)),
+    ("recording-workspace-empty", ("--workspace-preview", "--notes-empty-preview"), True, (2560, 1640)),
+    ("recording-workspace-collapsed", ("--workspace-preview", "--recorder-collapsed-preview"), True, (2560, 1640)),
+    ("recording-workspace-paused", ("--workspace-preview", "--recorder-paused-preview", "--minimum-window"), True, (2000, 1340)),
+    ("recording-workspace-markdown", ("--workspace-preview", "--markdown-preview"), True, (2560, 1640)),
     ("sidebar-ai-ready", ("--sidebar-ai-preview",), True, (2560, 1640)),
     ("sidebar-ai-checking", ("--sidebar-ai-preview", "--sidebar-ai-checking-preview", "--minimum-window"), True, (2000, 1340)),
     ("sidebar-ai-login", ("--sidebar-ai-preview", "--providers-login-preview", "--minimum-window"), True, (2000, 1340)),
