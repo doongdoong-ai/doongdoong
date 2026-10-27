@@ -17,7 +17,7 @@ struct RecordingWorkspaceView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
-                Text(recording.recordsAudioOnly ? "녹음" : "강의 기록")
+                Text("녹음")
                     .font(.system(size: 13, weight: .medium))
                 Spacer()
                 Image(systemName: "folder").font(.system(size: 12))
@@ -38,7 +38,6 @@ struct RecordingWorkspaceView: View {
                         .frame(width: geometry.size.width, height: geometry.size.height)
 
                     RecorderPanel(audio: store.audio, collapsed: collapsed,
-                                  audioOnly: recording.recordsAudioOnly,
                                   pause: store.toggleRecordingPause,
                                   stop: finish,
                                   toggle: {
@@ -62,7 +61,6 @@ struct RecordingWorkspaceView: View {
 private struct RecorderPanel: View {
     let audio: AudioEngine
     let collapsed: Bool
-    let audioOnly: Bool
     let pause: () -> Void
     let stop: () -> Void
     let toggle: () -> Void
@@ -123,8 +121,8 @@ private struct RecorderPanel: View {
                     .position(x: collapsed ? size.width - 72 : size.width / 2 + 33, y: collapsed ? 32 : size.height - 177)
 
                 VStack(spacing: 9) {
-                    Image(systemName: audioOnly ? "waveform" : "sparkles").font(.system(size: 16))
-                    Text(audioOnly ? "녹음과 필기를 함께 보관합니다.\n필요할 때 AI로 정리할 수 있어요." : "수업이 끝나면 녹음을 마쳐주세요.\nAI가 전사문과 핵심 요약을 정리합니다.")
+                    Image(systemName: "sparkles").font(.system(size: 16))
+                    Text("수업이 끝나면 녹음을 마쳐주세요.\nAI가 전사문과 핵심 요약을 정리합니다.")
                         .font(.system(size: 12)).lineSpacing(5).multilineTextAlignment(.center)
                 }.foregroundStyle(SoriTheme.secondary.opacity(0.8))
                     .opacity(collapsed ? 0 : 1).accessibilityHidden(collapsed)

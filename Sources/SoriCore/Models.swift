@@ -10,7 +10,9 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
 }
 
 public enum RecordingMode: String, Codable, Sendable {
-    case lecture, audioOnly
+    case lecture
+    /// Compatibility for existing recordings; new recordings use the lecture workflow.
+    case audioOnly
 }
 
 public enum RecordingStatus: String, Codable, Sendable {

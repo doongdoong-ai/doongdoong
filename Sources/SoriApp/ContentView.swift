@@ -118,26 +118,13 @@ struct SidebarView: View {
                 if store.audio.isRecording { Task { await store.stopRecording() } }
                 else { store.requestRecording() }
             } label: {
-                Label(store.audio.isRecording ? "녹음 마치기" : (store.isFinalizingRecording ? "저장 중…" : "강의 기록하기"),
-                      systemImage: store.audio.isRecording ? "stop.fill" : "plus")
+                Label(store.audio.isRecording ? "녹음 마치기" : (store.isFinalizingRecording ? "저장 중…" : "녹음하기"),
+                      systemImage: store.audio.isRecording ? "stop.fill" : "mic.fill")
                     .font(.system(size: 14, weight: .medium)).frame(maxWidth: .infinity).padding(.vertical, 6)
             }.buttonStyle(.borderedProminent).controlSize(.large).tint(store.audio.isRecording ? SoriTheme.recording : SoriTheme.ink)
                 .disabled(store.isStartingRecording || store.isFinalizingRecording || store.repository == nil)
                 .help(store.audio.isRecording ? "녹음 마치기 · ⌘R" : "녹음부터 전사문과 핵심 요약까지 · ⌘R")
                 .padding(.horizontal, 18).padding(.top, 26)
-
-            if !store.audio.isRecording && !store.isFinalizingRecording {
-                HStack(spacing: 4) {
-                    Button { store.requestRecording(mode: .audioOnly) } label: {
-                        Label("녹음하기", systemImage: "waveform")
-                            .font(.system(size: 13, weight: .medium))
-                            .padding(.horizontal, 6).padding(.vertical, 10).contentShape(Rectangle())
-                    }.buttonStyle(.plain).foregroundStyle(SoriTheme.secondary)
-                        .disabled(store.isStartingRecording || store.repository == nil)
-                        .help("음성만 저장하고, 필요할 때 정리 · ⌥⌘R")
-                    RecordingModeHelp()
-                }.frame(maxWidth: .infinity).padding(.horizontal, 18).padding(.top, 4)
-            }
 
             librarySearch.padding(.horizontal, 18).padding(.top, 17).padding(.bottom, 10)
 
@@ -476,11 +463,8 @@ struct WelcomeView: View {
                 .font(.system(size: 15)).foregroundStyle(SoriTheme.secondary)
             HStack(spacing: 12) {
                 Button { store.requestRecording() } label: {
-                    Label("강의 기록하기", systemImage: "plus")
+                    Label("녹음하기", systemImage: "mic.fill")
                 }.buttonStyle(.borderedProminent).tint(SoriTheme.ink)
-                    .disabled(store.isStartingRecording || store.isFinalizingRecording || store.audio.isRecording || store.repository == nil)
-                Button { store.requestRecording(mode: .audioOnly) } label: { Text("녹음하기") }
-                    .buttonStyle(.bordered).tint(SoriTheme.ink)
                     .disabled(store.isStartingRecording || store.isFinalizingRecording || store.audio.isRecording || store.repository == nil)
             }.font(.system(size: 14)).controlSize(.large)
             Text("녹음 시작 전 저장할 폴더를 선택합니다.").font(.system(size: 14)).foregroundStyle(SoriTheme.secondary)
