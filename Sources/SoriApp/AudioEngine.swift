@@ -12,6 +12,7 @@ final class AudioEngine: NSObject, AVAudioRecorderDelegate, AVAudioPlayerDelegat
     var duration: Double = 0
     var level: Float = 0
     var liveLevels: [Float] = Array(repeating: 0.04, count: 80)
+    @ObservationIgnored var meterUpdatedAt = ProcessInfo.processInfo.systemUptime
     var rate: Float = 1 { didSet { player?.rate = rate } }
     var volume: Float = 1 { didSet { player?.volume = volume } }
     var onRecordingError: ((String) -> Void)?
@@ -136,6 +137,7 @@ final class AudioEngine: NSObject, AVAudioRecorderDelegate, AVAudioPlayerDelegat
             recorder.updateMeters(); recordingTime = recorder.currentTime
             level = isPausedRecording ? 0.03 : max(0.03, min(1, pow(10, recorder.averagePower(forChannel: 0) / 35)))
             liveLevels.removeFirst(); liveLevels.append(level)
+            meterUpdatedAt = ProcessInfo.processInfo.systemUptime
         }
         if let player, isPlaying {
             if let loopRange, player.currentTime >= loopRange.upperBound {

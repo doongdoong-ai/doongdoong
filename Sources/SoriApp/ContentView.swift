@@ -9,17 +9,21 @@ struct ContentView: View {
 
     var body: some View {
         GeometryReader { geometry in
-            HStack(spacing: 0) {
-                SidebarView(store: store).frame(width: geometry.size.width > 1150 ? 280 : 250)
-                Rectangle().fill(SoriTheme.line).frame(width: 1)
-                if !store.focusMode && store.selectedProjectID == nil {
-                    LibraryView(store: store).frame(width: geometry.size.width > 1150 ? 294 : 270)
+            if let id = store.recordingID, let recording = store.recordings.first(where: { $0.id == id }) {
+                RecordingWorkspaceView(store: store, recording: recording).id(id)
+            } else {
+                HStack(spacing: 0) {
+                    SidebarView(store: store).frame(width: geometry.size.width > 1150 ? 280 : 250)
                     Rectangle().fill(SoriTheme.line).frame(width: 1)
+                    if !store.focusMode && store.selectedProjectID == nil {
+                        LibraryView(store: store).frame(width: geometry.size.width > 1150 ? 294 : 270)
+                        Rectangle().fill(SoriTheme.line).frame(width: 1)
+                    }
+                    Group {
+                        if let selected = store.selected { RecordingDetailView(store: store, recording: selected, transcriptVisible: transcriptVisible, searchVisible: searchVisible) }
+                        else { WelcomeView(store: store) }
+                    }.frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-                Group {
-                    if let selected = store.selected { RecordingDetailView(store: store, recording: selected, transcriptVisible: transcriptVisible, searchVisible: searchVisible) }
-                    else { WelcomeView(store: store) }
-                }.frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .background(SoriTheme.paper)
@@ -58,14 +62,14 @@ struct ContentView: View {
             }
         }
         .dropDestination(for: URL.self) { urls, _ in
-            guard !store.isImporting, !urls.isEmpty else { return false }
+            guard store.recordingID == nil, !store.isImporting, !urls.isEmpty else { return false }
             guard urls.allSatisfy(AppStore.canImport) else {
                 store.errorMessage = "오디오 또는 동영상 파일만 가져올 수 있습니다. 폴더와 웹 주소는 지원하지 않습니다."
                 return false
             }
             Task { await store.importFiles(urls) }
             return true
-        } isTargeted: { dropTarget = $0 && !store.isImporting }
+        } isTargeted: { dropTarget = $0 && !store.isImporting && store.recordingID == nil }
         .alert("작업을 완료하지 못했습니다", isPresented: Binding(get: { store.errorMessage != nil }, set: { if !$0 { store.errorMessage = nil } })) {
             Button("확인") { store.errorMessage = nil }
         } message: { Text(store.errorMessage ?? "") }
