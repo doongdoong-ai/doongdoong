@@ -17,7 +17,7 @@ final class ConnectionSetupTests: XCTestCase {
         try? FileManager.default.removeItem(at: root)
     }
 
-    @MainActor func testFirstFailureAllowsAudioOnlyWithoutCompletingSetup() async throws {
+    @MainActor func testFirstFailureDoesNotStartRecordingOrCompleteSetup() async throws {
         var calls = 0
         let (root, defaults, settings) = try fixture { _, _, _ in
             calls += 1; throw ProviderConnectionIssue(.unknown, stage: .probe)
@@ -26,17 +26,15 @@ final class ConnectionSetupTests: XCTestCase {
         let store = AppStore(root: root, settings: settings)
         await settings.refreshAIConnection(presentOnFailure: true)?.value
         XCTAssertTrue(settings.showConnectionSetup); XCTAssertFalse(settings.hasCompletedAISetup)
-        store.useRecordingWithoutAI(); store.connectionSetupDismissed()
-        XCTAssertFalse(settings.showConnectionSetup); XCTAssertTrue(settings.analysisEnabled)
+        XCTAssertTrue(settings.analysisEnabled)
         XCTAssertFalse(defaults.bool(forKey: "aiSetup.codex.completed"))
-        store.requestRecording(mode: .audioOnly)
-        XCTAssertTrue(store.showRecordingDestination)
-        store.showRecordingDestination = false
+        XCTAssertFalse(store.showRecordingDestination)
         store.requestRecording()
         XCTAssertTrue(settings.showConnectionSetup)
         XCTAssertFalse(store.showRecordingDestination)
-        store.useRecordingWithoutAI(); store.connectionSetupDismissed()
-        XCTAssertTrue(store.showRecordingDestination); XCTAssertEqual(store.requestedRecordingMode, .audioOnly)
+        store.requestRecording()
+        XCTAssertTrue(settings.showConnectionSetup)
+        XCTAssertFalse(store.showRecordingDestination)
         XCTAssertEqual(calls, 1, "Unknown failures must not trigger a retry loop")
     }
 
@@ -56,7 +54,7 @@ final class ConnectionSetupTests: XCTestCase {
         XCTAssertTrue(settings.hasCompletedAISetup); XCTAssertTrue(settings.showConnectionSetup)
         store.finishConnectionSetup(); store.connectionSetupDismissed()
         XCTAssertFalse(settings.showConnectionSetup)
-        XCTAssertTrue(store.showRecordingDestination); XCTAssertEqual(store.requestedRecordingMode, .lecture)
+        XCTAssertTrue(store.showRecordingDestination)
     }
 
     @MainActor func testSavedRecordingRemainsUntouchedUntilConnected() async throws {
@@ -72,12 +70,13 @@ final class ConnectionSetupTests: XCTestCase {
         XCTAssertTrue(settings.showConnectionSetup); XCTAssertNil(store.processingID); XCTAssertTrue(store.queue.isEmpty)
         XCTAssertEqual(store.recordings.first?.status, .saved)
         XCTAssertTrue(store.canModify(recording.id))
-        store.useRecordingWithoutAI(); store.connectionSetupDismissed()
-        XCTAssertFalse(settings.showConnectionSetup); XCTAssertFalse(settings.hasCompletedAISetup)
+        await settings.refreshAIConnection()?.value
+        XCTAssertTrue(settings.showConnectionSetup); XCTAssertFalse(settings.hasCompletedAISetup)
+        XCTAssertNil(store.processingID); XCTAssertTrue(store.queue.isEmpty)
         XCTAssertEqual(store.recordings.first?.status, .saved)
     }
 
-    @MainActor func testUnstartedBatchIsSavedAndCanBeDeferredWithoutPhantomQueue() async throws {
+    @MainActor func testUnstartedBatchRemainsSavedDuringFailedConnectionRetry() async throws {
         let (root, defaults, settings) = try fixture { _, _, _ in throw ProviderConnectionIssue(.unknown, stage: .probe) }
         defer { cleanup(root, defaults) }
         let store = AppStore(root: root, settings: settings)
@@ -91,20 +90,10 @@ final class ConnectionSetupTests: XCTestCase {
         XCTAssertTrue(settings.showConnectionSetup)
         XCTAssertEqual(store.recordings.map(\.status), [.saved, .saved])
         XCTAssertTrue(store.recordings.allSatisfy { $0.work == nil })
-        store.useRecordingWithoutAI(); store.connectionSetupDismissed()
+        await settings.refreshAIConnection()?.value
+        XCTAssertTrue(settings.showConnectionSetup)
         XCTAssertTrue(store.queue.isEmpty); XCTAssertNil(store.processingID)
         XCTAssertEqual(store.recordings.map(\.status), [.saved, .saved])
-    }
-
-    @MainActor func testAudioOnlyShortcutDismissesConnectionBeforeOpeningDestination() async throws {
-        let (root, defaults, settings) = try fixture { _, _, _ in throw ProviderConnectionIssue(.unknown, stage: .probe) }
-        defer { cleanup(root, defaults) }
-        let store = AppStore(root: root, settings: settings)
-        await settings.refreshAIConnection(presentOnFailure: true)?.value
-        store.requestRecording(mode: .audioOnly)
-        XCTAssertFalse(settings.showConnectionSetup); XCTAssertFalse(store.showRecordingDestination)
-        store.connectionSetupDismissed()
-        XCTAssertTrue(store.showRecordingDestination); XCTAssertEqual(store.requestedRecordingMode, .audioOnly)
     }
 
     @MainActor func testSetupCompletionPersistsButCurrentReadinessDoesNot() async throws {

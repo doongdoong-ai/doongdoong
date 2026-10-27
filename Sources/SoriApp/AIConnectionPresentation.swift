@@ -42,7 +42,7 @@ struct AIConnectionPresentation {
             case .invalidResponse:
                 self.init("AI 응답을 확인하지 못했어요", "다시 시도해 주세요. 같은 문제가 계속되면 Codex를 업데이트한 뒤 확인해 주세요.", .retry, "다시 확인")
             case .unknown:
-                self.init("AI 연결을 확인하지 못했어요", "다시 시도하거나, 녹음만 먼저 이용할 수 있어요. 저장한 녹음은 나중에 AI가 연결되면 정리할 수 있습니다.", .retry, "다시 확인")
+                self.init("AI 연결을 확인하지 못했어요", "다시 확인해 주세요. 문제가 계속되면 설정에서 AI 연결 상태와 진단 정보를 확인해 주세요.", .retry, "다시 확인")
             }
         }
     }

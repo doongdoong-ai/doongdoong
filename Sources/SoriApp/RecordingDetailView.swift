@@ -526,7 +526,7 @@ struct RecordingDetailView: View {
                     .disabled(store.isSleeping || store.isPreparingForSleep)
                 Button { Task { await store.stopRecording() } } label: { Label("녹음 마치기", systemImage: "stop.fill") }.buttonStyle(PrimaryButtonStyle())
             }
-            Text(recording.recordsAudioOnly ? "음성만 저장합니다. 텍스트 정리는 나중에 시작할 수 있어요." : (store.settings.transcriptionReady ? "녹음을 마치면 AI가 정리해 드려요." : "녹음을 마치면 음성 파일이 작업 폴더에 저장됩니다."))
+            Text(store.settings.transcriptionReady ? "녹음을 마치면 AI가 정리해 드려요." : "녹음을 마치면 음성 파일이 작업 폴더에 저장됩니다.")
                 .font(.system(size: 14)).foregroundStyle(SoriTheme.secondary)
             Spacer()
         }.frame(maxWidth: .infinity)

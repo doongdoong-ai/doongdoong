@@ -56,16 +56,8 @@ struct AIConnectionSetupView: View {
                     }.font(.system(size: 12)).padding(.top, 8)
                 }.font(.system(size: 13)).tint(SoriTheme.secondary).padding(.top, 18)
             }
-            if settings.selectedModel == nil && settings.connectionIssue?.kind != .unknown {
-                Text("녹음은 먼저 시작하고, 정리는 나중에 할 수 있어요.")
-                    .font(.system(size: 12)).foregroundStyle(SoriTheme.secondary).padding(.top, 24)
-            }
             Rectangle().fill(SoriTheme.line).frame(height: 1).padding(.top, 26).padding(.bottom, 20)
             HStack(spacing: 16) {
-                if settings.selectedModel == nil {
-                    Button("녹음만 이용하기") { store.useRecordingWithoutAI() }
-                        .buttonStyle(.plain).foregroundStyle(SoriTheme.secondary).keyboardShortcut(.cancelAction)
-                }
                 Spacer(minLength: 0)
                 Button(presentation.actionTitle) {
                     switch presentation.action {

@@ -116,18 +116,6 @@ final class InterruptionTests: XCTestCase {
         XCTAssertEqual(calls, 0)
     }
 
-    @MainActor func testRecordingDestinationUsesExplicitModeWithoutChangingNextDefault() throws {
-        let root = root(); defer { cleanup(root) }
-        let store = AppStore(root: root, settings: try settings(root))
-        store.requestRecording(mode: .audioOnly)
-        XCTAssertTrue(store.showRecordingDestination)
-        XCTAssertEqual(store.requestedRecordingMode, .audioOnly)
-        store.showRecordingDestination = false
-        store.settings.analysisEnabled = false
-        store.requestRecording()
-        XCTAssertEqual(store.requestedRecordingMode, .lecture)
-    }
-
     @MainActor private func settings(_ root: URL) throws -> AppSettings {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: root.lastPathComponent))
         defaults.set("/missing-codex", forKey: "codexPath")

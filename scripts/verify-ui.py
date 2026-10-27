@@ -65,7 +65,6 @@ SCENARIOS = (
     ("recording-only", ("--recording-only-preview",), True, (2560, 1640)),
     ("recording-only-minimum", ("--recording-only-preview", "--minimum-window"), True, (2000, 1340)),
     ("recording-only-active", ("--recording-only-preview", "--recording-active-preview", "--minimum-window"), True, (2000, 1340)),
-    ("recording-help", ("--recording-help-preview",), False, (660, 700)),
     ("transcript", ("--transcript-preview",), True, (2560, 1640)),
     ("follow-return", ("--transcript-preview", "--follow-return-preview"), True, (2560, 1640)),
     ("follow-above", ("--transcript-preview", "--follow-return-preview", "--follow-above-preview", "--minimum-window"), True, (2000, 1340)),

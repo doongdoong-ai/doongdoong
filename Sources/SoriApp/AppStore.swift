@@ -21,11 +21,10 @@ final class AppStore {
     var toast: String?
     var showSettings = false
     var settingsSection: SettingsSection = .speech
-    private enum ConnectionIntent { case recording(RecordingMode), process([(id: UUID, summaryOnly: Bool)]) }
+    private enum ConnectionIntent { case recording, process([(id: UUID, summaryOnly: Bool)]) }
     private var connectionIntent: ConnectionIntent?
     private var continueAfterConnectionDismissal = false
     var showRecordingDestination = false
-    private(set) var requestedRecordingMode: RecordingMode = .lecture
     var librarySearchRequested = false
     var recordingID: UUID?
     var processingID: UUID?
@@ -217,38 +216,18 @@ final class AppStore {
         } catch { errorMessage = error.localizedDescription }
     }
 
-    func requestRecording(mode: RecordingMode = .lecture) {
+    func requestRecording() {
         guard !audio.isRecording, !isStartingRecording, !isFinalizingRecording, !isTerminating, !isSleeping, !isPreparingForSleep, repository != nil else { return }
-        if mode == .audioOnly && settings.showConnectionSetup {
-            connectionIntent = .recording(.audioOnly); continueAfterConnectionDismissal = true
-            settings.dismissConnectionSetup()
-            return
-        }
-        if mode == .lecture && needsAIConnection {
-            connectionIntent = .recording(mode)
+        if needsAIConnection {
+            connectionIntent = .recording
             settings.presentConnectionSetup()
             return
         }
-        if mode == .audioOnly && settings.checkingAI && !settings.hasCompletedAISetup {
-            // A first-run probe must not interrupt a recording the user chose to start.
-            settings.cancelAIConnectionCheck()
-        }
-        requestedRecordingMode = mode
         showRecordingDestination = true
     }
 
     private var needsAIConnection: Bool { settings.analysisEnabled && textProvider == nil && !settings.analysisReady }
 
-    func useRecordingWithoutAI() {
-        if case .recording = connectionIntent {
-            connectionIntent = .recording(.audioOnly)
-            continueAfterConnectionDismissal = true
-        } else {
-            connectionIntent = nil
-            continueAfterConnectionDismissal = false
-        }
-        settings.dismissConnectionSetup()
-    }
     func finishConnectionSetup() {
         guard settings.selectedModel != nil else { return }
         continueAfterConnectionDismissal = true
@@ -260,7 +239,7 @@ final class AppStore {
         guard continueAfterConnectionDismissal else { return }
         continueAfterConnectionDismissal = false
         switch intent {
-        case .recording(let mode): requestRecording(mode: mode)
+        case .recording: requestRecording()
         case .process(let jobs):
             for job in jobs { enqueue(job.id, lectureOnly: job.summaryOnly) }
         case nil: break
@@ -272,7 +251,7 @@ final class AppStore {
         settingsSection = .providers; showSettings = true
     }
 
-    func startRecording(in projectID: UUID, mode: RecordingMode = .lecture) async {
+    func startRecording(in projectID: UUID) async {
         guard !audio.isRecording, !isStartingRecording, !isFinalizingRecording, !isTerminating, !isSleeping, !isPreparingForSleep, let repository else { return }
         isStartingRecording = true; defer { isStartingRecording = false }
         guard await audio.requestMicrophone() else {
@@ -284,11 +263,9 @@ final class AppStore {
             guard let project = projects.first(where: { $0.id == projectID }) else {
                 throw SoriError.message("녹음을 저장할 폴더가 없습니다. 폴더를 먼저 만들어 주세요.")
             }
-            let title = mode == .audioOnly
-                ? project.name + " · " + Date().formatted(.dateTime.month(.twoDigits).day(.twoDigits).hour().minute())
-                : Date().formatted(.dateTime.month(.twoDigits).day(.twoDigits).hour().minute()) + " 녹음"
+            let title = Date().formatted(.dateTime.month(.twoDigits).day(.twoDigits).hour().minute()) + " 녹음"
             var recording = try repository.createRecording(project: project, title: title)
-            recording.recordingMode = mode
+            recording.recordingMode = .lecture
             recording.status = .recording
             recording.work = .init(kind: .recording, state: .running)
             recordings.insert(recording, at: 0)
@@ -301,7 +278,7 @@ final class AppStore {
                 throw error
             }
             recordingID = recording.id
-            if !recording.recordsAudioOnly && settings.transcriptionReady {
+            if settings.transcriptionReady {
                 let live = LocalRecordingTranscription(audio: try repository.audioURL(for: recording),
                     directory: try repository.directory(for: recording), configuration: settings.transcriptionConfiguration)
                 let id = recording.id

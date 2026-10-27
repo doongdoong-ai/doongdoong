@@ -160,10 +160,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             var size = settings ? (args.contains("--minimum-window") ? SettingsView.minimumSize : SettingsView.defaultSize) : NSSize(width: args.contains("--minimum-window") ? 1000 : 1280, height: args.contains("--minimum-window") ? 670 : 820)
             if settings { self.store.settingsSection = args.contains("--providers-preview") ? .providers : (args.contains("--shortcuts-preview") ? .shortcuts : .speech) }
             var content = settings ? AnyView(SettingsView(store: self.store, providerDetailsExpanded: args.contains("--provider-details-preview"))) : AnyView(ContentView(store: self.store, transcriptVisible: args.contains("--transcript-preview"), searchVisible: search))
-            if args.contains("--recording-help-preview") {
-                size = NSSize(width: 330, height: 350)
-                content = AnyView(RecordingModeHelpContent().frame(maxHeight: .infinity).background(SoriTheme.paper))
-            }
             if args.contains("--connection-preview") { content = AnyView(AIConnectionSetupView(store: self.store)); size = NSSize(width: 480, height: args.contains("--connection-install-preview") ? 410 : 350) }
             let view = NSHostingView(rootView: content.frame(width: size.width, height: size.height).environment(\.displayScale, 2).preferredColorScheme(.light).tint(SoriTheme.accent))
             view.appearance = NSAppearance(named: .aqua)
@@ -202,8 +198,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         attach(app, title: "둥둥이", to: menu)
 
         let file = NSMenu(title: "파일")
-        add("강의 기록하기", to: file, action: #selector(record), key: "r")
-        add("녹음하기", to: file, action: #selector(recordAudioOnly), key: "r", modifiers: [.command, .option])
+        add("녹음하기", to: file, action: #selector(record), key: "r")
         add("녹음 일시 정지", to: file, action: #selector(pauseRecording), key: "r", modifiers: [.command, .shift])
         add("오디오 가져오기…", to: file, action: #selector(importAudio), key: "o")
         file.addItem(.separator())
@@ -263,7 +258,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         if store.audio.isRecording { Task { await store.stopRecording() } }
         else { store.requestRecording() }
     }
-    @objc private func recordAudioOnly() { store.requestRecording(mode: .audioOnly) }
     @objc private func pauseRecording() { store.toggleRecordingPause() }
     @objc private func systemWillSleep() { store.systemWillSleep() }
     @objc private func systemDidWake() {
@@ -319,10 +313,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         guard !terminationRequested else { return false }
         switch menuItem.action {
         case #selector(record):
-            menuItem.title = store.audio.isRecording ? "녹음 마치기" : "강의 기록하기"
+            menuItem.title = store.audio.isRecording ? "녹음 마치기" : "녹음하기"
             return store.repository != nil && !store.isStartingRecording && !store.isFinalizingRecording
-        case #selector(recordAudioOnly):
-            return store.repository != nil && !store.audio.isRecording && !store.isStartingRecording && !store.isFinalizingRecording
         case #selector(pauseRecording):
             menuItem.title = store.audio.isPausedRecording ? "녹음 재개" : "녹음 일시 정지"
             return store.audio.isRecording
