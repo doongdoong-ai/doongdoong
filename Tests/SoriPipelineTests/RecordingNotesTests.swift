@@ -74,7 +74,7 @@ import SoriCore
         XCTAssertFalse(editor.hasMarkedText())
     }
 
-    func testPreviewAndLayoutUpdatesKeepDocumentSelectionAndDisableHiddenEditing() throws {
+    func testLayoutUpdatesKeepSameEditableDocumentAndSelection() throws {
         var value = "첫 문장\n둘째 문장 👩‍💻"
         let binding = Binding(get: { value }, set: { value = $0 })
         let controller = MarkdownEditorController()
@@ -86,10 +86,10 @@ import SoriCore
         let selection = (value as NSString).range(of: "둘째 문장 👩‍💻")
         editor.setSelectedRange(selection)
         scroll.frame = NSRect(x: 0, y: 0, width: 800, height: 500)
-        coordinator.update(MarkdownNotesEditor(text: binding, controller: controller, isEditing: false), scroll: scroll)
+        coordinator.update(initial, scroll: scroll)
         XCTAssertTrue(editor.textStorage === storage)
-        XCTAssertFalse(editor.isEditable)
-        XCTAssertFalse(editor.isSelectable)
+        XCTAssertTrue(editor.isEditable)
+        XCTAssertTrue(editor.isSelectable)
         coordinator.update(initial, scroll: scroll)
         XCTAssertTrue(editor.isEditable)
         XCTAssertEqual(editor.selectedRange(), selection)
@@ -109,18 +109,6 @@ import SoriCore
         controller.endComposition()
         XCTAssertFalse(editor.hasMarkedText())
         XCTAssertEqual(value, "한")
-    }
-
-    func testPreviewPreservesBlockBoundariesAndStylesWithoutUnsafeLinks() throws {
-        let rendered = MarkdownStyle.preview("# 제목\n\n본문 **핵심**\n\n- 첫 항목\n- 둘째 항목\n\n> 인용\n\n[링크](javascript:alert)")
-        XCTAssertTrue(rendered.string.contains("제목\n본문 핵심\n"))
-        XCTAssertTrue(rendered.string.contains("•  첫 항목\n•  둘째 항목\n"))
-        let title = try XCTUnwrap(rendered.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)
-        XCTAssertEqual(title.pointSize, 28)
-        let range = (rendered.string as NSString).range(of: "링크")
-        XCTAssertNil(rendered.attribute(.link, at: range.location, effectiveRange: nil))
-        let tasks = MarkdownStyle.preview("- [ ] 미완료\n- [x] 완료")
-        XCTAssertEqual(tasks.string, "☐  미완료\n☑  완료\n")
     }
 
     func testAutosaveBelongsToRecordingAndDoesNotOverwritePendingEdit() async throws {

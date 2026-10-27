@@ -54,7 +54,8 @@ final class RecordingNotesDraft {
 }
 
 enum MarkdownCommand {
-    case heading, bold, italic, bullet, task, quote, code, timestamp(String)
+    case heading, bold, italic, bullet, ordered, task, quote, code, highlight, strikethrough
+    case indent, outdent, toggleTask, link, timestamp(String)
 }
 
 struct MarkdownEdit: Equatable {
@@ -73,12 +74,29 @@ enum MarkdownEditing {
         case .bold: return wrap("**", source: source, selection: selection)
         case .italic: return wrap("*", source: source, selection: selection)
         case .code: return wrap("`", source: source, selection: selection)
+        case .highlight: return wrap("==", source: source, selection: selection)
+        case .strikethrough: return wrap("~~", source: source, selection: selection)
+        case .indent: return indentation(source: source, selection: selection, remove: false)
+        case .outdent: return indentation(source: source, selection: selection, remove: true)
+        case .link:
+            let label = source.substring(with: selection)
+            let replacement = "[\(label)](https://)"
+            return .init(range: selection, replacement: replacement,
+                         selection: NSRange(location: selection.location + (label as NSString).length + 3, length: 8))
+        case .toggleTask:
+            let line = source.lineRange(for: NSRange(location: selection.location, length: 0))
+            if let match = try? NSRegularExpression(pattern: #"^[ \t]*[-+*] \[([ xX])\] "#).firstMatch(in: text, range: line) {
+                let mark = match.range(at: 1)
+                return .init(range: mark, replacement: source.substring(with: mark) == " " ? "x" : " ", selection: selection)
+            }
+            return prefix("- [ ] ", source: source, selection: selection)
         case .timestamp(let value):
             let insertion = "[\(value)] "
             return .init(range: selection, replacement: insertion,
                          selection: NSRange(location: selection.location + (insertion as NSString).length, length: 0))
         case .heading: return prefix("## ", source: source, selection: selection)
         case .bullet: return prefix("- ", source: source, selection: selection)
+        case .ordered: return prefix("1. ", source: source, selection: selection)
         case .task: return prefix("- [ ] ", source: source, selection: selection)
         case .quote: return prefix("> ", source: source, selection: selection)
         }
@@ -94,7 +112,7 @@ enum MarkdownEditing {
                          replacement: source.substring(with: selection),
                          selection: NSRange(location: selection.location - length, length: selection.length))
         }
-        let content = selection.length == 0 ? "텍스트" : source.substring(with: selection)
+        let content = source.substring(with: selection)
         return .init(range: selection, replacement: marker + content + marker,
                      selection: NSRange(location: selection.location + length, length: (content as NSString).length))
     }
@@ -107,9 +125,17 @@ enum MarkdownEditing {
         let trailingNewline = value.hasSuffix("\n")
         var lines = value.components(separatedBy: "\n")
         if trailingNewline { lines.removeLast() }
-        let remove = lines.allSatisfy { $0.hasPrefix(marker) }
-        let result = lines.map { remove ? String($0.dropFirst(marker.count)) : marker + $0 }.joined(separator: "\n") + (trailingNewline ? "\n" : "")
-        let delta = remove ? -(marker as NSString).length : (marker as NSString).length
+        let pattern = marker.hasPrefix("#") ? #"^#{1,6} "# : marker == "> " ? #"^> "# : #"^(?:[-+*] (?:\[[ xX]\] )?|\d+[.)] )"#
+        let parts = lines.map { line -> (indent: String, prefix: String, body: String) in
+            let indent = String(line.prefix(while: { $0 == " " || $0 == "\t" }))
+            let content = String(line.dropFirst(indent.count))
+            let existing = content.range(of: pattern, options: .regularExpression).map { String(content[$0]) } ?? ""
+            return (indent, existing, String(content.dropFirst(existing.count)))
+        }
+        let remove = parts.allSatisfy { $0.prefix == marker }
+        let result = parts.map { $0.indent + (remove ? "" : marker) + $0.body }.joined(separator: "\n") + (trailingNewline ? "\n" : "")
+        let delta = (remove ? 0 : (marker as NSString).length) - ((parts.first?.prefix ?? "") as NSString).length
+
         let caret = max(range.location, min(range.location + (result as NSString).length, selection.location + delta))
         return .init(range: range, replacement: result,
                      selection: selection.length == 0 ? NSRange(location: caret, length: 0)
@@ -138,5 +164,33 @@ enum MarkdownEditing {
         let insertion = "\n" + indent + next
         return .init(range: selection, replacement: insertion,
                      selection: NSRange(location: selection.location + (insertion as NSString).length, length: 0))
+    }
+
+    private static func indentation(source: NSString, selection: NSRange, remove: Bool) -> MarkdownEdit {
+        let range = source.lineRange(for: NSRange(location: selection.location, length: max(0, selection.length - 1)))
+        let value = source.substring(with: range)
+        var lines = value.components(separatedBy: "\n")
+        let trailing = value.hasSuffix("\n")
+        if trailing { lines.removeLast() }
+        var firstDelta = 0
+        let changed = lines.enumerated().map { index, line -> String in
+            let removed = line.hasPrefix("\t") ? 1 : min(4, line.prefix(while: { $0 == " " }).count)
+            let delta = remove ? -removed : 4
+            if index == 0 { firstDelta = delta }
+            return remove ? String(line.dropFirst(removed)) : "    " + line
+        }.joined(separator: "\n") + (trailing ? "\n" : "")
+        let newSelection = selection.length == 0
+            ? NSRange(location: max(range.location, selection.location + firstDelta), length: 0)
+            : NSRange(location: range.location, length: (changed as NSString).length - (trailing ? 1 : 0))
+        return .init(range: range, replacement: changed, selection: newSelection)
+    }
+
+    static func removeListPrefix(text: String, selection: NSRange) -> MarkdownEdit? {
+        guard selection.length == 0, selection.location > 0, selection.location <= (text as NSString).length else { return nil }
+        let source = text as NSString, line = (text as NSString).lineRange(for: selection)
+        let before = source.substring(with: NSRange(location: line.location, length: selection.location - line.location))
+        guard before.range(of: #"^[ \t]*(?:[-+*] (?:\[[ xX]\] )?|\d+[.)] |> )$"#, options: .regularExpression) != nil else { return nil }
+        if before.hasPrefix("    ") || before.hasPrefix("\t") { return indentation(source: source, selection: selection, remove: true) }
+        return .init(range: NSRange(location: line.location, length: (before as NSString).length), replacement: "", selection: NSRange(location: line.location, length: 0))
     }
 }
