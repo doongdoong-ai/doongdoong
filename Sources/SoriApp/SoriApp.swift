@@ -151,12 +151,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             }
             SummaryPreview.configure(store: self.store, arguments: args)
             TranscriptPreview.configure(store: self.store, arguments: args)
+            RecordingPreview.configure(store: self.store, arguments: args)
             let settings = args.contains("--settings-preview") || args.contains("--providers-preview")
             let search = args.contains("--search-preview") || args.contains("--empty-search-preview")
             if search { self.store.transcriptSearch = args.contains("--empty-search-preview") ? "일치하지 않는 검색어" : "녹음" }
-            let size = settings ? (args.contains("--minimum-window") ? SettingsView.minimumSize : SettingsView.defaultSize) : NSSize(width: args.contains("--minimum-window") ? 1000 : 1280, height: args.contains("--minimum-window") ? 670 : 820)
+            var size = settings ? (args.contains("--minimum-window") ? SettingsView.minimumSize : SettingsView.defaultSize) : NSSize(width: args.contains("--minimum-window") ? 1000 : 1280, height: args.contains("--minimum-window") ? 670 : 820)
             if settings { self.store.settingsSection = args.contains("--providers-preview") ? .providers : (args.contains("--shortcuts-preview") ? .shortcuts : .speech) }
-            let content = settings ? AnyView(SettingsView(store: self.store, providerDetailsExpanded: args.contains("--provider-details-preview"))) : AnyView(ContentView(store: self.store, transcriptVisible: args.contains("--transcript-preview"), searchVisible: search))
+            var content = settings ? AnyView(SettingsView(store: self.store, providerDetailsExpanded: args.contains("--provider-details-preview"))) : AnyView(ContentView(store: self.store, transcriptVisible: args.contains("--transcript-preview"), searchVisible: search))
+            if args.contains("--recording-help-preview") {
+                size = NSSize(width: 330, height: 350)
+                content = AnyView(RecordingModeHelpContent().frame(maxHeight: .infinity).background(SoriTheme.paper))
+            }
             let view = NSHostingView(rootView: content.frame(width: size.width, height: size.height).environment(\.displayScale, 2).preferredColorScheme(.light).tint(SoriTheme.accent))
             view.appearance = NSAppearance(named: .aqua)
             view.frame = NSRect(origin: .zero, size: size)
@@ -193,7 +198,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         attach(app, title: "둥둥이", to: menu)
 
         let file = NSMenu(title: "파일")
-        add("녹음 시작", to: file, action: #selector(record), key: "r")
+        add("강의 기록하기", to: file, action: #selector(record), key: "r")
+        add("녹음하기", to: file, action: #selector(recordAudioOnly), key: "r", modifiers: [.command, .option])
         add("녹음 일시 정지", to: file, action: #selector(pauseRecording), key: "r", modifiers: [.command, .shift])
         add("오디오 가져오기…", to: file, action: #selector(importAudio), key: "o")
         file.addItem(.separator())
@@ -244,6 +250,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         if store.audio.isRecording { Task { await store.stopRecording() } }
         else { store.requestRecording() }
     }
+    @objc private func recordAudioOnly() { store.requestRecording(mode: .audioOnly) }
     @objc private func pauseRecording() { store.toggleRecordingPause() }
     @objc private func systemWillSleep() { store.systemWillSleep() }
     @objc private func systemDidWake() {
@@ -297,8 +304,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         guard !terminationRequested else { return false }
         switch menuItem.action {
         case #selector(record):
-            menuItem.title = store.audio.isRecording ? "녹음 마치기" : "녹음 시작"
+            menuItem.title = store.audio.isRecording ? "녹음 마치기" : "강의 기록하기"
             return store.repository != nil && !store.isStartingRecording && !store.isFinalizingRecording
+        case #selector(recordAudioOnly):
+            return store.repository != nil && !store.audio.isRecording && !store.isStartingRecording && !store.isFinalizingRecording
         case #selector(pauseRecording):
             menuItem.title = store.audio.isPausedRecording ? "녹음 재개" : "녹음 일시 정지"
             return store.audio.isRecording

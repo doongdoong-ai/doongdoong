@@ -87,8 +87,8 @@ struct RecordingDetailView: View {
             if recording.id != store.recordingID { PlayerView(store: store, recording: recording) }
         }
         .sheet(item: $editingSegment) { edit in editor(edit) }
-        .alert("강의 제목 수정", isPresented: $renaming) {
-            TextField("강의 제목", text: $titleDraft)
+        .alert("제목 수정", isPresented: $renaming) {
+            TextField("제목", text: $titleDraft)
             Button("취소", role: .cancel) {}
             Button("저장") {
                 let title = titleDraft.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -125,33 +125,36 @@ struct RecordingDetailView: View {
                     Text(store.currentProjectName).lineLimit(1).help(store.currentProjectName)
                 }.font(.system(size: 13)).foregroundStyle(SoriTheme.secondary)
                 Spacer(minLength: 12)
-                Menu {
-                    Button("텍스트 (.txt)") { store.export(recording, format: "txt") }
-                    Button("자막 (.srt)") { store.export(recording, format: "srt") }
-                    Button("전체 기록 (.json)") { store.export(recording, format: "json") }
-                    Divider()
-                    Button("전사문 복사") { store.copyTranscript() }
-                } label: { Image(systemName: "square.and.arrow.up").font(.system(size: 16)) }
-                    .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().padding(8).tint(SoriTheme.secondary).foregroundStyle(SoriTheme.secondary)
-                    .disabled(recording.segments.isEmpty).help("내보내기").accessibilityLabel("전사문 내보내기")
+                if !recording.segments.isEmpty {
+                    Menu {
+                        Button("텍스트 (.txt)") { store.export(recording, format: "txt") }
+                        Button("자막 (.srt)") { store.export(recording, format: "srt") }
+                        Button("전체 기록 (.json)") { store.export(recording, format: "json") }
+                        Divider()
+                        Button("전사문 복사") { store.copyTranscript() }
+                    } label: { Image(systemName: "square.and.arrow.up").font(.system(size: 16)) }
+                        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().padding(8).tint(SoriTheme.secondary).foregroundStyle(SoriTheme.secondary)
+                        .help("내보내기").accessibilityLabel("전사문 내보내기")
+                }
                 Menu {
                     Button("제목 수정") { titleDraft = recording.title; renaming = true }
                         .disabled(!store.canRename(recording.id))
-                        .help("AI가 제목을 붙인 뒤 수정할 수 있어요")
-                    Button(store.focusMode ? "보관함 보기" : "집중해서 읽기") { store.focusMode.toggle() }
-                    Divider()
-                    Toggle("원문 보기", isOn: $store.showOriginal).disabled(recording.segments.isEmpty)
-                    Toggle("재생 중인 문장 따라가기", isOn: $store.followPlayback)
-                    Menu("전사문 글자 크기") {
-                        ForEach([Double(18), 22, 28], id: \.self) { size in
-                            Button { textSize = size } label: {
-                                Label(size == 18 ? "작게" : size == 22 ? "보통" : "크게", systemImage: textSize == size ? "checkmark" : "textformat.size")
+                    if !recording.segments.isEmpty {
+                        Button(store.focusMode ? "보관함 보기" : "집중해서 읽기") { store.focusMode.toggle() }
+                        Divider()
+                        Toggle("원문 보기", isOn: $store.showOriginal)
+                        Toggle("재생 중인 문장 따라가기", isOn: $store.followPlayback)
+                        Menu("전사문 글자 크기") {
+                            ForEach([Double(18), 22, 28], id: \.self) { size in
+                                Button { textSize = size } label: {
+                                    Label(size == 18 ? "작게" : size == 22 ? "보통" : "크게", systemImage: textSize == size ? "checkmark" : "textformat.size")
+                                }
                             }
                         }
-                    }
-                    Divider()
-                    if !recording.status.isProcessing && recording.id != store.recordingID {
-                        Button("다시 정리하기") { store.enqueue(recording.id) }.disabled(!store.canTranscribe(recording.id))
+                        Divider()
+                        if !recording.status.isProcessing && recording.id != store.recordingID {
+                            Button("다시 정리하기") { store.enqueue(recording.id) }.disabled(!store.canTranscribe(recording.id))
+                        }
                     }
                     Divider()
                     RecordingMenu(store: store, recording: recording)
@@ -162,41 +165,48 @@ struct RecordingDetailView: View {
                 Text(recording.title).font(.system(size: 30, weight: .semibold)).tracking(-0.6).lineLimit(2).textSelection(.enabled)
                     .allowsTightening(false).fixedSize(horizontal: false, vertical: true).help(recording.title)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                if recording.generatedTitle != nil {
+                if recording.generatedTitle != nil || recording.recordsAudioOnly {
                     Button { titleDraft = recording.title; renaming = true } label: {
                         Image(systemName: "pencil").font(.system(size: 15)).frame(width: 30, height: 32)
                     }.buttonStyle(DetailControlStyle()).foregroundStyle(SoriTheme.secondary)
-                        .disabled(!store.canRename(recording.id)).help("강의 제목 수정").accessibilityLabel("강의 제목 수정")
+                        .disabled(!store.canRename(recording.id)).help("제목 수정").accessibilityLabel("제목 수정")
                 }
             }
             HStack(spacing: 10) {
                 Text(recordingDate)
                 if recording.isDemo { Text("·"); Text("샘플 음성") }
-                if recording.generatedTitle == nil && recording.status != .noSpeech && !recording.isDemo {
+                if recording.generatedTitle == nil && !recording.recordsAudioOnly && recording.status != .noSpeech && !recording.isDemo {
                     Text("·"); Text("AI가 제목을 붙인 뒤 수정할 수 있어요").lineLimit(1)
                 }
                 Spacer(minLength: 0)
-                if store.showOriginal && !showLectureNotes { Text("원문").foregroundStyle(SoriTheme.accent) }
+                if store.showOriginal && !showLectureNotes && !recording.segments.isEmpty { Text("원문").foregroundStyle(SoriTheme.accent) }
             }.font(.system(size: 13)).foregroundStyle(SoriTheme.secondary)
         }.padding(.horizontal, 38).padding(.top, 32).padding(.bottom, 24)
     }
 
     private var tools: some View {
         HStack(spacing: 12) {
-            HStack(spacing: 22) {
-                modeButton("핵심 요약", selected: showLectureNotes) { showLectureNotes = true; searchFocused = false }
-                modeButton("전사문", selected: !showLectureNotes) { showLectureNotes = false }
+            if !recording.segments.isEmpty {
+                HStack(spacing: 22) {
+                    modeButton("핵심 요약", selected: showLectureNotes) { showLectureNotes = true; searchFocused = false }
+                    modeButton("전사문", selected: !showLectureNotes) { showLectureNotes = false }
+                }
+            } else {
+                Text("음성 녹음").font(.system(size: 14, weight: .medium)).foregroundStyle(SoriTheme.secondary)
+                    .padding(.vertical, 13)
             }
             Spacer(minLength: 4)
-            if !showLectureNotes {
+            if !showLectureNotes && !recording.segments.isEmpty {
                 Button { store.copyTranscript() } label: {
                     Image(systemName: "doc.on.doc").font(.system(size: 15)).frame(width: 32, height: 34)
                 }.buttonStyle(DetailControlStyle()).foregroundStyle(SoriTheme.secondary)
                     .disabled(recording.segments.isEmpty).help("전사문 전체 복사").accessibilityLabel("전사문 전체 복사")
             }
-            Button { openSearch() } label: { Image(systemName: "magnifyingglass").font(.system(size: 16)).frame(width: 32, height: 34).contentShape(Rectangle()) }
-                .buttonStyle(DetailControlStyle()).foregroundStyle(showSearch || !query.isEmpty ? SoriTheme.ink : SoriTheme.secondary).keyboardShortcut("f", modifiers: .command)
-                .help("전사문에서 찾기 · ⌘F").accessibilityLabel("전사문에서 찾기").disabled(recording.segments.isEmpty)
+            if !recording.segments.isEmpty {
+                Button { openSearch() } label: { Image(systemName: "magnifyingglass").font(.system(size: 16)).frame(width: 32, height: 34).contentShape(Rectangle()) }
+                    .buttonStyle(DetailControlStyle()).foregroundStyle(showSearch || !query.isEmpty ? SoriTheme.ink : SoriTheme.secondary).keyboardShortcut("f", modifiers: .command)
+                    .help("전사문에서 찾기 · ⌘F").accessibilityLabel("전사문에서 찾기")
+            }
             Button { store.showNotes.toggle() } label: { Image(systemName: "note.text").font(.system(size: 16)).frame(width: 32, height: 34).contentShape(Rectangle()) }
                 .buttonStyle(DetailControlStyle()).foregroundStyle(store.showNotes ? SoriTheme.ink : SoriTheme.secondary).help("메모와 북마크").accessibilityLabel(store.showNotes ? "메모와 북마크 닫기" : "메모와 북마크 열기")
         }.padding(.horizontal, 38)
@@ -449,7 +459,10 @@ struct RecordingDetailView: View {
             ScrollView {
                 VStack(spacing: processing ? 0 : 18) {
                     Spacer(minLength: 0)
-                    if processing {
+                    if recording.recordsAudioOnly && store.isFinalizing(recording.id) {
+                        ProgressView().controlSize(.small)
+                        Text("녹음을 저장하고 있습니다").font(.system(size: 18, weight: .medium))
+                    } else if processing {
                         ProcessingProgressView(store: store, recordingID: recording.id, condensed: geometry.size.height < 440)
                             .padding(.horizontal, 30)
                     } else if recording.work?.state == .interrupted {
@@ -458,6 +471,22 @@ struct RecordingDetailView: View {
                             .font(.system(size: 18, weight: .medium))
                         Text("녹음 파일은 보관되어 있습니다.")
                             .font(.system(size: 14)).foregroundStyle(SoriTheme.secondary).multilineTextAlignment(.center)
+                    } else if recording.status == .saved {
+                        Image(systemName: "waveform").font(.system(size: 38, weight: .light)).foregroundStyle(SoriTheme.secondary)
+                            .padding(.bottom, 4)
+                        Text("녹음 저장됨").font(.system(size: 22, weight: .medium))
+                        Text("지금 다시 듣거나, 필요할 때\n전사문과 핵심 요약으로 정리하세요.")
+                            .font(.system(size: 14)).foregroundStyle(SoriTheme.secondary)
+                            .multilineTextAlignment(.center).lineSpacing(6)
+                        if store.settings.transcriptionReady {
+                            Button { store.enqueue(recording.id) } label: {
+                                Label("텍스트로 정리", systemImage: "text.bubble")
+                            }.buttonStyle(PrimaryButtonStyle()).padding(.top, 8)
+                                .disabled(!store.canTranscribe(recording.id))
+                        } else {
+                            Button("음성 인식 설정") { NotificationCenter.default.post(name: Notification.Name("BungBungiShowSettings"), object: nil, userInfo: ["section": "speech"]) }
+                                .buttonStyle(.bordered).padding(.top, 8)
+                        }
                     } else if recording.status == .noSpeech {
                         Text("감지된 음성이 없어요")
                             .font(.system(size: 20, weight: .medium)).multilineTextAlignment(.center)
@@ -505,7 +534,7 @@ struct RecordingDetailView: View {
                     .disabled(store.isSleeping || store.isPreparingForSleep)
                 Button { Task { await store.stopRecording() } } label: { Label("녹음 마치기", systemImage: "stop.fill") }.buttonStyle(PrimaryButtonStyle())
             }
-            Text(store.settings.transcriptionReady ? "녹음을 마치면 AI가 정리해 드려요." : "녹음을 마치면 음성 파일이 작업 폴더에 저장됩니다.")
+            Text(recording.recordsAudioOnly ? "음성만 저장합니다. 텍스트 정리는 나중에 시작할 수 있어요." : (store.settings.transcriptionReady ? "녹음을 마치면 AI가 정리해 드려요." : "녹음을 마치면 음성 파일이 작업 폴더에 저장됩니다."))
                 .font(.system(size: 14)).foregroundStyle(SoriTheme.secondary)
             Spacer()
         }.frame(maxWidth: .infinity)

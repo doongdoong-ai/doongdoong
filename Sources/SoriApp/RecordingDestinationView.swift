@@ -6,17 +6,19 @@ struct RecordingDestinationView: View {
     @State private var selectedID: UUID?
     @State private var newFolderName = ""
     @FocusState private var folderNameFocused: Bool
+    private let mode: RecordingMode
 
     init(store: AppStore) {
         self.store = store
+        mode = store.requestedRecordingMode
         _selectedID = State(initialValue: store.selectedProjectID ?? store.projects.first?.id)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
             VStack(alignment: .leading, spacing: 9) {
-                Text("녹음할 폴더를 선택하세요").font(.system(size: 23, weight: .semibold)).tracking(-0.4)
-                Text("녹음과 핵심 요약을 이 폴더에 저장합니다.")
+                Text(mode == .audioOnly ? "녹음하기" : "강의 기록하기").font(.system(size: 23, weight: .semibold)).tracking(-0.4)
+                Text(mode == .audioOnly ? "음성을 저장할 폴더를 선택하세요. 정리는 나중에 시작할 수 있습니다." : "녹음과 전사문, 핵심 요약을 저장할 폴더를 선택하세요.")
                     .font(.system(size: 14)).foregroundStyle(SoriTheme.secondary)
             }
             ScrollView {
@@ -48,7 +50,7 @@ struct RecordingDestinationView: View {
                 Button("녹음 시작") {
                     guard let selectedID else { return }
                     store.showRecordingDestination = false
-                    Task { await store.startRecording(in: selectedID) }
+                    Task { await store.startRecording(in: selectedID, mode: mode) }
                 }.buttonStyle(PrimaryButtonStyle()).keyboardShortcut(.defaultAction)
                     .disabled(selectedID == nil || !store.projects.contains(where: { $0.id == selectedID }) || store.isStartingRecording || store.audio.isRecording)
             }
