@@ -18,7 +18,7 @@ import SoriCore
               textSize: 22, query: query, selectedSearchID: nil, activeID: active, playbackTime: time,
               followPlayback: true, scrollRequest: request, searchScrollRequest: 0,
               canPlay: canPlay, canEdit: true, play: play, togglePlayback: {}, isLooping: { _ in false },
-              isBookmarked: { _ in false }, edit: { _ in }, repeatSegment: { _ in }, bookmark: { _ in }, copy: { _ in },
+              edit: { _ in }, repeatSegment: { _ in }, copy: { _ in },
               playbackPositionChanged: position)
     }
 

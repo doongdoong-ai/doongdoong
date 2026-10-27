@@ -69,6 +69,7 @@ public struct Recording: Codable, Identifiable, Equatable, Sendable {
     public var duration: Double
     public var status: RecordingStatus
     public var segments: [TranscriptSegment]
+    /// Legacy metadata retained when saving older recordings. No app feature uses it.
     public var bookmarks: [Bookmark]
     public var notes: String
     public var isFavorite: Bool

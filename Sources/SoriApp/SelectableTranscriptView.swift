@@ -76,10 +76,8 @@ struct SelectableTranscriptView: NSViewRepresentable {
     let play: (TranscriptSegment) -> Void
     let togglePlayback: () -> Void
     let isLooping: (TranscriptSegment) -> Bool
-    let isBookmarked: (TranscriptSegment) -> Bool
     let edit: (TranscriptSegment) -> Void
     let repeatSegment: (TranscriptSegment) -> Void
-    let bookmark: (TranscriptSegment) -> Void
     let copy: (TranscriptSegment) -> Void
     var playbackPositionChanged: (TranscriptScrollDestination?) -> Void = { _ in }
 
@@ -324,8 +322,7 @@ struct SelectableTranscriptView: NSViewRepresentable {
                 item("이 문장 재생", enabled: parent.canPlay) { [parent] in parent.play(segment) },
                 item(parent.isLooping(segment) ? "문장 반복 해제" : "이 문장 반복 듣기", enabled: parent.canPlay) { [parent] in parent.repeatSegment(segment) },
                 item("문장 수정", enabled: parent.canEdit) { [parent] in parent.edit(segment) },
-                item("문장 복사") { [parent] in parent.copy(segment) },
-                item(parent.isBookmarked(segment) ? "북마크 보기" : "북마크 추가") { [parent] in parent.bookmark(segment) }
+                item("문장 복사") { [parent] in parent.copy(segment) }
             ]
         }
 

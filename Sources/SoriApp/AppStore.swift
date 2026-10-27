@@ -738,19 +738,6 @@ final class AppStore {
         else { settings.cancelAIConnectionCheck(); await LocalTranscription.engine.unload() }
         return saved
     }
-    func bookmark() {
-        guard let selected, audio.duration > 0 else { return }
-        let time = audio.currentTime
-        guard !selected.bookmarks.contains(where: { abs($0.time - time) < 0.1 }) else {
-            notify("이 위치에 이미 북마크가 있습니다")
-            return
-        }
-        let segmentID = Transcript.activeID(at: time, in: selected.segments)
-        let label = selected.segments.first { $0.id == segmentID }?.text ?? "중요한 순간"
-        if update(selected.id, { $0.bookmarks.append(.init(time: time, label: String(label.prefix(60)))); $0.bookmarks.sort { $0.time < $1.time } }) {
-            notify("\(TimeText.clock(time))에 북마크를 남겼습니다")
-        }
-    }
     @discardableResult func move(_ recording: Recording, to project: Project) -> Bool {
         guard canModify(recording.id), recording.projectID != project.id else { return false }
         do {
@@ -830,7 +817,7 @@ final class AppStore {
             if FileManager.default.fileExists(atPath: corrections.path) {
                 item.segments = try Transcript.applyCorrections(Data(contentsOf: corrections), to: item.segments)
             }
-            item.notes = "둥둥이의 기능을 둘러보기 위한 합성 음성 샘플입니다.\n\n문장을 클릭하면 해당 위치부터 들을 수 있습니다. ⌘B로 북마크를 남겨 보세요."
+            item.notes = "둥둥이의 기능을 둘러보기 위한 합성 음성 샘플입니다.\n\n문장을 클릭하면 해당 위치부터 들을 수 있습니다. 필기는 클릭해서 바로 수정할 수 있습니다."
             try repository.save(item); recordings.insert(item, at: 0)
             selectedProjectID = nil; favoritesOnly = false; select(item.id)
         } catch { errorMessage = error.localizedDescription }

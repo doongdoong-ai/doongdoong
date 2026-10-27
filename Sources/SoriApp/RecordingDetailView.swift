@@ -6,7 +6,6 @@ struct RecordingDetailView: View {
     let recording: Recording
     @State private var showAudioReview = false
     @State private var showLectureNotes = false
-    @State private var showBookmarks = false
     @State private var editingSegment: SegmentEdit?
     @State private var editedText = ""
     @State private var titleDraft = ""
@@ -212,9 +211,6 @@ struct RecordingDetailView: View {
                     .buttonStyle(DetailControlStyle()).foregroundStyle(showSearch || !query.isEmpty ? SoriTheme.ink : SoriTheme.secondary).keyboardShortcut("f", modifiers: .command)
                     .help("전사문에서 찾기 · ⌘F").accessibilityLabel("전사문에서 찾기")
             }
-            Button { showBookmarks.toggle() } label: { Image(systemName: "bookmark").font(.system(size: 15)).frame(width: 32, height: 34).contentShape(Rectangle()) }
-                .buttonStyle(DetailControlStyle()).foregroundStyle(SoriTheme.secondary).help("북마크").accessibilityLabel("북마크 열기")
-                .popover(isPresented: $showBookmarks, arrowEdge: .bottom) { RecordingBookmarksView(store: store, recording: recording).frame(width: 320, height: 270) }
         }.padding(.horizontal, 38)
             .background(alignment: .bottom) { Rectangle().fill(SoriTheme.line).frame(height: 1).padding(.horizontal, 38).allowsHitTesting(false) }
     }
@@ -267,8 +263,8 @@ struct RecordingDetailView: View {
                 selectedSearchID: selectedSearchID, activeID: activeID, playbackTime: store.audio.currentTime,
                 followPlayback: store.followPlayback, scrollRequest: scrollRequest,
                 searchScrollRequest: searchScrollRequest, canPlay: canPlay, canEdit: canEditTranscript,
-                play: play, togglePlayback: { store.audio.togglePlayback() }, isLooping: isLooping, isBookmarked: isBookmarked,
-                edit: edit, repeatSegment: toggleLoop, bookmark: addBookmark, copy: copy,
+                play: play, togglePlayback: { store.audio.togglePlayback() }, isLooping: isLooping,
+                edit: edit, repeatSegment: toggleLoop, copy: copy,
                 playbackPositionChanged: { playbackScrollDestination = $0 })
                 .overlay(alignment: .bottom) {
                     if canPlay, query.isEmpty, let destination = playbackScrollDestination {
@@ -346,17 +342,6 @@ struct RecordingDetailView: View {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(displayedText(segment), forType: .string)
         store.notify("문장을 복사했습니다")
-    }
-    private func isBookmarked(_ segment: TranscriptSegment) -> Bool {
-        recording.bookmarks.contains { abs($0.time - segment.start) < 0.1 }
-    }
-    private func addBookmark(_ segment: TranscriptSegment) {
-        guard !isBookmarked(segment) else { showBookmarks = true; return }
-        let saved = store.update(recording.id) {
-            $0.bookmarks.append(.init(time: segment.start, label: String(segment.text.prefix(60))))
-            $0.bookmarks.sort { $0.time < $1.time }
-        }
-        if saved { store.notify("북마크를 추가했습니다") }
     }
 
     private func editor(_ edit: SegmentEdit) -> some View {
@@ -557,7 +542,6 @@ struct PlayerView: View {
     private var displayedTime: Double { isScrubbing ? scrubTime : store.audio.currentTime }
     private var progress: Double { store.audio.duration > 0 ? displayedTime / store.audio.duration : 0 }
     private var playable: Bool { store.audio.duration > 0 && !store.audio.isRecording }
-    private var isBookmarked: Bool { recording.bookmarks.contains { abs($0.time - store.audio.currentTime) < 0.1 } }
 
     var body: some View {
         VStack(spacing: 12) {
@@ -605,7 +589,7 @@ struct PlayerView: View {
                     ForEach([Float(0.5), 0.75, 1, 1.25, 1.5, 1.75, 2], id: \.self) { rate in
                         Button { store.audio.rate = rate } label: { Label("\(rate.formatted())×", systemImage: store.audio.rate == rate ? "checkmark" : "speedometer") }
                     }
-                } label: { Text(store.audio.rate == 1 ? "속도" : "\(store.audio.rate.formatted())배").font(.system(size: 14)).frame(width: 48) }
+                } label: { Text("\(store.audio.rate.formatted())×").font(.system(size: 14)).monospacedDigit().frame(width: 48) }
                     .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().tint(SoriTheme.secondary).help("재생 속도").accessibilityLabel("재생 속도 \(store.audio.rate.formatted())배")
                 Spacer()
                 HStack(spacing: 25) {
@@ -620,9 +604,7 @@ struct PlayerView: View {
                         .buttonStyle(DetailControlStyle()).help("10초 앞으로 · ⌘→").accessibilityLabel("10초 앞으로")
                 }
                 Spacer()
-                Button { store.bookmark() } label: { Image(systemName: isBookmarked ? "bookmark.fill" : "bookmark").font(.system(size: 16)).frame(width: 48, height: 36) }
-                    .buttonStyle(DetailControlStyle()).help(isBookmarked ? "이 위치에 북마크가 있습니다" : "현재 위치에 북마크 · ⌘B")
-                    .accessibilityLabel(isBookmarked ? "현재 위치에 북마크가 있습니다" : "현재 위치에 북마크 추가")
+                Color.clear.frame(width: 48, height: 36).accessibilityHidden(true)
             }.padding(.horizontal, 14)
             if !playable {
                 Text("오디오 파일을 확인해 주세요").font(.system(size: 13)).foregroundStyle(SoriTheme.secondary)
@@ -652,50 +634,5 @@ private struct DetailControlStyle: ButtonStyle {
             .background(isEnabled && (hovered || configuration.isPressed) ? SoriTheme.sidebar : .clear, in: RoundedRectangle(cornerRadius: 6))
             .opacity(isEnabled ? 1 : 0.4)
             .onHover { hovered = $0 }
-    }
-}
-
-struct RecordingBookmarksView: View {
-    @Bindable var store: AppStore
-    let recording: Recording
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("북마크").font(.system(size: 14, weight: .medium))
-                Spacer()
-                Button { store.bookmark() } label: { Image(systemName: "plus").font(.system(size: 14)) }
-                    .buttonStyle(.plain).help("현재 위치에 북마크 · ⌘B").accessibilityLabel("현재 위치에 북마크 추가")
-                    .disabled(store.audio.duration == 0 || store.audio.isRecording)
-            }
-            ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    if recording.bookmarks.isEmpty {
-                        Text("다시 듣고 싶은 곳에 북마크를 남기세요.")
-                            .font(.system(size: 14)).foregroundStyle(SoriTheme.secondary).lineSpacing(5).fixedSize(horizontal: false, vertical: true).padding(.top, 7)
-                    }
-                    ForEach(recording.bookmarks) { bookmark in
-                        HStack(alignment: .top) {
-                            Button {
-                                if let loop = store.audio.loopRange, !loop.contains(bookmark.time) { store.audio.clearLoop() }
-                                store.audio.seek(bookmark.time)
-                                if !store.audio.isPlaying { store.audio.togglePlayback() }
-                            } label: {
-                                HStack(alignment: .top, spacing: 7) {
-                                    Text(TimeText.clock(bookmark.time)).font(.system(size: 13)).monospacedDigit().foregroundStyle(SoriTheme.secondary).fixedSize()
-                                    Text(bookmark.label).font(.system(size: 14)).lineLimit(2).multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
-                                }
-                            }.buttonStyle(.plain).help(bookmark.label).disabled(store.audio.duration == 0 || store.audio.isRecording)
-                                .accessibilityLabel("\(TimeText.clock(bookmark.time)) 북마크 재생, \(bookmark.label)")
-                            Spacer(minLength: 0)
-                            Button { store.update(recording.id) { $0.bookmarks.removeAll { $0.id == bookmark.id } } } label: {
-                                Image(systemName: "xmark").font(.system(size: 12)).foregroundStyle(SoriTheme.secondary).padding(5)
-                            }.buttonStyle(.plain).help("북마크 삭제").accessibilityLabel("\(TimeText.clock(bookmark.time)) 북마크 삭제")
-                        }
-                    }
-                }.frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }.frame(maxWidth: .infinity)
-            .padding(20).background(SoriTheme.surface)
     }
 }
