@@ -22,6 +22,9 @@ final class AppStore {
     var toast: String?
     var showSettings = false
     var settingsSection: SettingsSection = .speech
+    private enum ConnectionIntent { case recording(RecordingMode), process([(id: UUID, summaryOnly: Bool)]) }
+    private var connectionIntent: ConnectionIntent?
+    private var continueAfterConnectionDismissal = false
     var showRecordingDestination = false
     private(set) var requestedRecordingMode: RecordingMode = .lecture
     var librarySearchRequested = false
@@ -158,7 +161,7 @@ final class AppStore {
     }
 
     func canOrganizeLecture(_ id: UUID) -> Bool {
-        analysisReady && canModify(id) && recordings.contains { $0.id == id && !$0.segments.isEmpty }
+        settings.analysisEnabled && canModify(id) && recordings.contains { $0.id == id && !$0.segments.isEmpty }
     }
 
     func canRename(_ id: UUID) -> Bool {
@@ -219,8 +222,57 @@ final class AppStore {
 
     func requestRecording(mode: RecordingMode = .lecture) {
         guard !audio.isRecording, !isStartingRecording, !isFinalizingRecording, !isTerminating, !isSleeping, !isPreparingForSleep, repository != nil else { return }
+        if mode == .audioOnly && settings.showConnectionSetup {
+            connectionIntent = .recording(.audioOnly); continueAfterConnectionDismissal = true
+            settings.dismissConnectionSetup()
+            return
+        }
+        if mode == .lecture && needsAIConnection {
+            connectionIntent = .recording(mode)
+            settings.presentConnectionSetup()
+            return
+        }
+        if mode == .audioOnly && settings.checkingAI && !settings.hasCompletedAISetup {
+            // A first-run probe must not interrupt a recording the user chose to start.
+            settings.cancelAIConnectionCheck()
+        }
         requestedRecordingMode = mode
         showRecordingDestination = true
+    }
+
+    private var needsAIConnection: Bool { settings.analysisEnabled && textProvider == nil && !settings.analysisReady }
+
+    func useRecordingWithoutAI() {
+        if case .recording = connectionIntent {
+            connectionIntent = .recording(.audioOnly)
+            continueAfterConnectionDismissal = true
+        } else {
+            connectionIntent = nil
+            continueAfterConnectionDismissal = false
+        }
+        settings.dismissConnectionSetup()
+    }
+    func finishConnectionSetup() {
+        guard settings.selectedModel != nil else { return }
+        continueAfterConnectionDismissal = true
+        settings.dismissConnectionSetup()
+    }
+    func connectionSetupDismissed() {
+        let intent = connectionIntent
+        connectionIntent = nil
+        guard continueAfterConnectionDismissal else { return }
+        continueAfterConnectionDismissal = false
+        switch intent {
+        case .recording(let mode): requestRecording(mode: mode)
+        case .process(let jobs):
+            for job in jobs { enqueue(job.id, lectureOnly: job.summaryOnly) }
+        case nil: break
+        }
+    }
+    func openConnectionSettings() {
+        connectionIntent = nil; continueAfterConnectionDismissal = false
+        settings.dismissConnectionSetup()
+        settingsSection = .providers; showSettings = true
     }
 
     func startRecording(in projectID: UUID, mode: RecordingMode = .lecture) async {
@@ -389,6 +441,19 @@ final class AppStore {
         guard !isTerminating, !isSleeping, !isPreparingForSleep, !recoveringIDs.contains(id), recordings.contains(where: { $0.id == id }), id != recordingID, id != finalizingID, id != processingID, !importingIDs.contains(id), !queue.contains(id) else { return }
         if let item = recordings.first(where: { $0.id == id }), item.work?.kind == .recording,
            item.audioFileName == nil || item.duration <= 0 { return }
+        if needsAIConnection {
+            // Imported batches and a recording just stopped are saved, not silently
+            // left looking queued while connection setup is open or dismissed.
+            if let item = recordings.first(where: { $0.id == id }), item.status == .queued,
+               item.segments.isEmpty, item.work?.state != .interrupted {
+                guard update(id, { $0.status = .saved; $0.work = nil }) else { return }
+            }
+            var jobs: [(id: UUID, summaryOnly: Bool)] = []
+            if case .process(let pending) = connectionIntent { jobs = pending.filter { $0.id != id } }
+            jobs.append((id, lectureOnly)); connectionIntent = .process(jobs)
+            settings.presentConnectionSetup()
+            return
+        }
         // Preserve existing results when the local AI dependencies are unavailable.
         guard lectureOnly ? analysisReady : settings.transcriptionReady else {
             errorMessage = lectureOnly ? settings.aiConnectionMessage : settings.transcriptionUnavailableReason
@@ -594,7 +659,7 @@ final class AppStore {
     func canResumeWork(_ id: UUID) -> Bool {
         guard canModify(id), let item = recordings.first(where: { $0.id == id }), item.work?.state == .interrupted else { return false }
         if item.work?.kind == .recording && (item.audioFileName == nil || item.duration <= 0) { return false }
-        return analysisReady && (item.work?.kind == .summary || settings.transcriptionReady)
+        return settings.analysisEnabled && (item.work?.kind == .summary || settings.transcriptionReady)
     }
 
     func resumeWork(_ id: UUID) {

@@ -123,6 +123,7 @@ final class InterruptionTests: XCTestCase {
         XCTAssertTrue(store.showRecordingDestination)
         XCTAssertEqual(store.requestedRecordingMode, .audioOnly)
         store.showRecordingDestination = false
+        store.settings.analysisEnabled = false
         store.requestRecording()
         XCTAssertEqual(store.requestedRecordingMode, .lecture)
     }
@@ -130,9 +131,9 @@ final class InterruptionTests: XCTestCase {
     @MainActor private func settings(_ root: URL) throws -> AppSettings {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: root.lastPathComponent))
         defaults.set("/missing-codex", forKey: "codexPath")
-        return AppSettings(defaults: defaults, modelResolver: { _ in
+        return AppSettings(defaults: defaults, connectionVerifier: { _, _, _ in
             XCTFail("An injected provider must not need Codex model discovery")
-            return .sol
+            return ConnectionFixture.ready(.sol)
         })
     }
     private func wave(finalized: Bool) -> Data {

@@ -26,7 +26,6 @@ struct SettingsView: View {
     static let minimumSize = NSSize(width: 760, height: 600)
     @Bindable var store: AppStore
     @State private var advanced = false
-    @State private var copiedLoginCommand = false
     @State private var providerAdvanced = false
     @State private var codexDraft: String
     @State private var ffmpegDraft: String
@@ -87,7 +86,7 @@ struct SettingsView: View {
             }
             .onChange(of: codexDraft) { _, _ in codexPathError = nil }
             .onChange(of: ffmpegDraft) { _, _ in ffmpegPathError = nil }
-            .onChange(of: store.settings.codexPath) { _, value in codexDraft = value; copiedLoginCommand = false }
+            .onChange(of: store.settings.codexPath) { _, value in codexDraft = value }
             .onChange(of: store.settings.ffmpegPath) { _, value in ffmpegDraft = value }
     }
 
@@ -244,10 +243,10 @@ struct SettingsView: View {
                     executableField("Codex 실행 파일", draft: $codexDraft, error: codexPathError,
                                     saved: settings.codexPath) { applyPath(isCodex: true) }
                     HStack {
-                        Button(copiedLoginCommand ? "로그인 명령 복사됨" : "로그인 명령 복사") { copyLoginCommand() }.disabled(!settings.codexReady)
+                        Button("ChatGPT로 로그인") { settings.signIn { NSWorkspace.shared.open($0) } }.disabled(!settings.codexReady || settings.checkingAI)
                         Spacer()
                     }
-                    note("자동 선택은 Sol을 우선하고, 없으면 Luna를 사용합니다. 모델 목록 확인은 잔여 사용량 확인이 아닙니다.").id("provider-advanced-end")
+                    note("자동 선택은 Sol을 우선하고, 없으면 Luna를 사용합니다. 설정을 바꾼 뒤 연결을 확인해 주세요.").id("provider-advanced-end")
                 }.padding(.top, 18)
             }.font(.system(size: 13)).tint(SoriTheme.secondary).id("provider-advanced")
             note("교정·요약에는 텍스트만 전달되며, ChatGPT 계정의 이용 한도가 적용됩니다.")
@@ -276,9 +275,9 @@ struct SettingsView: View {
             HStack(spacing: 12) {
                 if !settings.codexReady {
                     Button("실행 경로 설정") { providerAdvanced = true }
-                } else if settings.connectionState == .loginRequired {
-                    Button(copiedLoginCommand ? "복사됨" : "로그인 명령 복사") { copyLoginCommand() }
-                        .buttonStyle(.borderedProminent)
+                } else if settings.connectionIssue?.kind == .loginRequired || settings.connectionIssue?.kind == .unsupportedAuthentication {
+                    Button("ChatGPT로 로그인") { settings.signIn { NSWorkspace.shared.open($0) } }
+                        .buttonStyle(.borderedProminent).disabled(settings.checkingAI)
                 } else if let date = settings.lastConnectionCheck {
                     Text("마지막 확인 \(date.formatted(date: .omitted, time: .shortened))")
                         .font(.system(size: 12)).foregroundStyle(SoriTheme.secondary)
@@ -287,7 +286,14 @@ struct SettingsView: View {
                 Button(settings.checkingAI ? "확인 중…" : "연결 확인") { settings.refreshAIConnection() }
                     .disabled(settings.checkingAI || !settings.codexReady)
             }
-            if copiedLoginCommand { note("터미널에 붙여 넣어 로그인한 뒤 연결을 확인하세요.") }
+            if settings.checkingAI {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    note(settings.aiConnectionMessage)
+                    Spacer()
+                    Button("취소") { settings.cancelAIConnectionCheck() }.buttonStyle(.plain)
+                }
+            }
         }.padding(18).background(.white, in: RoundedRectangle(cornerRadius: 12))
             .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(SoriTheme.line))
     }
@@ -296,8 +302,8 @@ struct SettingsView: View {
         switch store.settings.connectionState {
         case .ready: return "연결됨"
         case .checking: return "확인 중"
-        case .loginRequired: return "로그인 필요"
-        case .unavailable, .failed: return "확인 필요"
+        case .signingIn: return "로그인 중"
+        case .blocked(let issue): return issue.kind == .loginRequired ? "로그인 필요" : "확인 필요"
         case .unchecked: return "연결 전"
         }
     }
@@ -388,11 +394,7 @@ struct SettingsView: View {
         if isCodex { codexPathError = nil; store.settings.codexPath = value; codexDraft = value }
         else { ffmpegPathError = nil; store.settings.ffmpegPath = value; ffmpegDraft = value }
     }
-    private func copyLoginCommand() {
-        let executable = "'" + store.settings.codexPath.replacingOccurrences(of: "'", with: "'\\''") + "'"
-        NSPasteboard.general.clearContents(); NSPasteboard.general.setString(executable + " login", forType: .string)
-        copiedLoginCommand = true
-    }
+
     private func effortName(_ effort: ReasoningEffort) -> String {
         switch effort {
         case .none: "None"
