@@ -170,6 +170,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             view.frame = NSRect(origin: .zero, size: size)
             self.snapshotView = view
             view.layoutSubtreeIfNeeded()
+            RecordingPreview.prepareEditor(in: view, arguments: args)
             TranscriptPreview.scrollAway(in: view, arguments: args)
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
                 view.layoutSubtreeIfNeeded()
@@ -220,6 +221,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         edit.addItem(.separator())
         edit.addItem(NSMenuItem(title: "굵게", action: #selector(MarkdownTextView.markdownBold(_:)), keyEquivalent: "b"))
         edit.addItem(NSMenuItem(title: "기울임", action: #selector(MarkdownTextView.markdownItalic(_:)), keyEquivalent: "i"))
+        edit.addItem(NSMenuItem(title: "링크", action: #selector(MarkdownTextView.markdownLink(_:)), keyEquivalent: "k"))
+        let taskItem = NSMenuItem(title: "체크 항목 전환", action: #selector(MarkdownTextView.markdownTask(_:)), keyEquivalent: "x")
+        taskItem.keyEquivalentModifierMask = [.command, .shift]
+        edit.addItem(taskItem)
         edit.addItem(.separator())
         add("전사문에서 찾기", to: edit, action: #selector(findTranscript), key: "f")
         add("보관함에서 찾기", to: edit, action: #selector(findLibrary), key: "f", modifiers: [.command, .shift])
@@ -274,7 +279,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     @objc private func bookmark() { store.bookmark() }
     @objc private func focus() { store.focusMode.toggle() }
     @objc private func demo() { Task { await store.addDemo() } }
-    @objc private func findTranscript() { NotificationCenter.default.post(name: Notification.Name("BungBungiFindTranscript"), object: nil) }
+    @objc private func findTranscript() {
+        let notes = store.recordingID != nil || store.showNotes
+        NotificationCenter.default.post(name: Notification.Name(notes ? "BungBungiFindNotes" : "BungBungiFindTranscript"), object: nil)
+    }
     @objc private func findLibrary() {
         store.focusMode = false
         DispatchQueue.main.async { NotificationCenter.default.post(name: Notification.Name("BungBungiFindLibrary"), object: nil) }
@@ -323,7 +331,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         case #selector(importAudio): return store.repository != nil && !store.isImporting
         case #selector(playPause), #selector(backward), #selector(forward), #selector(bookmark):
             return store.selected != nil && store.audio.duration > 0 && !store.audio.isRecording
-        case #selector(findTranscript): return !(store.selected?.segments.isEmpty ?? true)
+        case #selector(findTranscript):
+            let notes = store.recordingID != nil || store.showNotes
+            menuItem.title = notes ? "필기에서 찾기" : "전사문에서 찾기"
+            return notes || !(store.selected?.segments.isEmpty ?? true)
         case #selector(focus):
             menuItem.state = store.focusMode ? .on : .off
             return store.selected != nil

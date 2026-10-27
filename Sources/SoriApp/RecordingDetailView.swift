@@ -6,6 +6,7 @@ struct RecordingDetailView: View {
     let recording: Recording
     @State private var showAudioReview = false
     @State private var showLectureNotes = false
+    @State private var showBookmarks = false
     @State private var editingSegment: SegmentEdit?
     @State private var editedText = ""
     @State private var titleDraft = ""
@@ -66,6 +67,10 @@ struct RecordingDetailView: View {
             if let ranges = recording.reviewRanges, !ranges.isEmpty { audioReviewBanner(ranges) }
 
             if recording.id == store.recordingID { recordingState }
+            else if store.showNotes {
+                RecordingNotesPane(store: store, recording: recording, showsTitle: false)
+                    .id(recording.id).padding(.horizontal, 30).padding(.bottom, 16)
+            }
             else if recording.segments.isEmpty { emptyTranscript }
             else if showLectureNotes {
                 LectureNotesView(recording: recording,
@@ -81,9 +86,6 @@ struct RecordingDetailView: View {
             }
             else { transcript }
 
-            if store.showNotes {
-                NotesView(store: store, recording: recording).id(recording.id).frame(height: 190)
-            }
             if recording.id != store.recordingID { PlayerView(store: store, recording: recording) }
         }
         .sheet(item: $editingSegment) { edit in editor(edit) }
@@ -179,7 +181,7 @@ struct RecordingDetailView: View {
                     Text("·"); Text("AI가 제목을 붙인 뒤 수정할 수 있어요").lineLimit(1)
                 }
                 Spacer(minLength: 0)
-                if store.showOriginal && !showLectureNotes && !recording.segments.isEmpty { Text("원문").foregroundStyle(SoriTheme.accent) }
+                if !store.showNotes && store.showOriginal && !showLectureNotes && !recording.segments.isEmpty { Text("원문").foregroundStyle(SoriTheme.accent) }
             }.font(.system(size: 13)).foregroundStyle(SoriTheme.secondary)
         }.padding(.horizontal, 38).padding(.top, 32).padding(.bottom, 24)
     }
@@ -188,27 +190,31 @@ struct RecordingDetailView: View {
         HStack(spacing: 12) {
             if !recording.segments.isEmpty {
                 HStack(spacing: 22) {
-                    modeButton("핵심 요약", selected: showLectureNotes) { showLectureNotes = true; searchFocused = false }
-                    modeButton("전사문", selected: !showLectureNotes) { showLectureNotes = false }
+                    modeButton("핵심 요약", selected: !store.showNotes && showLectureNotes) { store.showNotes = false; showLectureNotes = true; searchFocused = false }
+                    modeButton("전사문", selected: !store.showNotes && !showLectureNotes) { store.showNotes = false; showLectureNotes = false }
+                    modeButton("필기", selected: store.showNotes) { store.showNotes = true; searchFocused = false }
                 }
             } else {
-                Text("음성 녹음").font(.system(size: 14, weight: .medium)).foregroundStyle(SoriTheme.secondary)
-                    .padding(.vertical, 13)
+                HStack(spacing: 22) {
+                    modeButton("음성 녹음", selected: !store.showNotes) { store.showNotes = false }
+                    modeButton("필기", selected: store.showNotes) { store.showNotes = true }
+                }
             }
             Spacer(minLength: 4)
-            if !showLectureNotes && !recording.segments.isEmpty {
+            if !store.showNotes && !showLectureNotes && !recording.segments.isEmpty {
                 Button { store.copyTranscript() } label: {
                     Image(systemName: "doc.on.doc").font(.system(size: 15)).frame(width: 32, height: 34)
                 }.buttonStyle(DetailControlStyle()).foregroundStyle(SoriTheme.secondary)
                     .disabled(recording.segments.isEmpty).help("전사문 전체 복사").accessibilityLabel("전사문 전체 복사")
             }
-            if !recording.segments.isEmpty {
+            if !store.showNotes && !recording.segments.isEmpty {
                 Button { openSearch() } label: { Image(systemName: "magnifyingglass").font(.system(size: 16)).frame(width: 32, height: 34).contentShape(Rectangle()) }
                     .buttonStyle(DetailControlStyle()).foregroundStyle(showSearch || !query.isEmpty ? SoriTheme.ink : SoriTheme.secondary).keyboardShortcut("f", modifiers: .command)
                     .help("전사문에서 찾기 · ⌘F").accessibilityLabel("전사문에서 찾기")
             }
-            Button { store.showNotes.toggle() } label: { Image(systemName: "note.text").font(.system(size: 16)).frame(width: 32, height: 34).contentShape(Rectangle()) }
-                .buttonStyle(DetailControlStyle()).foregroundStyle(store.showNotes ? SoriTheme.ink : SoriTheme.secondary).help("메모와 북마크").accessibilityLabel(store.showNotes ? "메모와 북마크 닫기" : "메모와 북마크 열기")
+            Button { showBookmarks.toggle() } label: { Image(systemName: "bookmark").font(.system(size: 15)).frame(width: 32, height: 34).contentShape(Rectangle()) }
+                .buttonStyle(DetailControlStyle()).foregroundStyle(SoriTheme.secondary).help("북마크").accessibilityLabel("북마크 열기")
+                .popover(isPresented: $showBookmarks, arrowEdge: .bottom) { RecordingBookmarksView(store: store, recording: recording).frame(width: 320, height: 270) }
         }.padding(.horizontal, 38)
             .background(alignment: .bottom) { Rectangle().fill(SoriTheme.line).frame(height: 1).padding(.horizontal, 38).allowsHitTesting(false) }
     }
@@ -293,6 +299,7 @@ struct RecordingDetailView: View {
 
     private func displayedText(_ segment: TranscriptSegment) -> String { store.showOriginal ? segment.originalText : segment.text }
     private func openSearch() {
+        store.showNotes = false
         showLectureNotes = false
         if showSearch { searchFocused = true }
         else { searchFocusRequested = true; showSearch = true }
@@ -344,7 +351,7 @@ struct RecordingDetailView: View {
         recording.bookmarks.contains { abs($0.time - segment.start) < 0.1 }
     }
     private func addBookmark(_ segment: TranscriptSegment) {
-        guard !isBookmarked(segment) else { store.showNotes = true; return }
+        guard !isBookmarked(segment) else { showBookmarks = true; return }
         let saved = store.update(recording.id) {
             $0.bookmarks.append(.init(time: segment.start, label: String(segment.text.prefix(60))))
             $0.bookmarks.sort { $0.time < $1.time }
@@ -648,106 +655,47 @@ private struct DetailControlStyle: ButtonStyle {
     }
 }
 
-struct NotesView: View {
+struct RecordingBookmarksView: View {
     @Bindable var store: AppStore
     let recording: Recording
-    @State private var draft = ""
-    @State private var savedDraft = ""
-    @State private var draftOwner: UUID?
-    @State private var saveTask: Task<Void, Never>?
-    @FocusState private var notesFocused: Bool
 
     var body: some View {
-        HStack(alignment: .top, spacing: 20) {
-            VStack(alignment: .leading, spacing: 9) {
-                HStack {
-                    Text("메모").font(.system(size: 14, weight: .medium))
-                    Spacer()
-                    if store.unsavedIDs.contains(recording.id) || draft != savedDraft {
-                        Text(store.unsavedIDs.contains(recording.id) ? "저장 실패" : "저장 중…")
-                            .font(.system(size: 13)).foregroundStyle(store.unsavedIDs.contains(recording.id) ? SoriTheme.recording : SoriTheme.secondary)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("북마크").font(.system(size: 14, weight: .medium))
+                Spacer()
+                Button { store.bookmark() } label: { Image(systemName: "plus").font(.system(size: 14)) }
+                    .buttonStyle(.plain).help("현재 위치에 북마크 · ⌘B").accessibilityLabel("현재 위치에 북마크 추가")
+                    .disabled(store.audio.duration == 0 || store.audio.isRecording)
+            }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    if recording.bookmarks.isEmpty {
+                        Text("다시 듣고 싶은 곳에 북마크를 남기세요.")
+                            .font(.system(size: 14)).foregroundStyle(SoriTheme.secondary).lineSpacing(5).fixedSize(horizontal: false, vertical: true).padding(.top, 7)
                     }
-                }
-                ZStack(alignment: .topLeading) {
-                    if draft.isEmpty { Text("메모를 남겨보세요").font(.system(size: 14)).foregroundStyle(SoriTheme.secondary).padding(.top, 8).padding(.leading, 5).allowsHitTesting(false).accessibilityHidden(true) }
-                    TextEditor(text: $draft).font(.system(size: 14)).lineSpacing(5).scrollContentBackground(.hidden)
-                        .focused($notesFocused).accessibilityLabel("이 녹음의 메모")
-                }.frame(minHeight: 112, maxHeight: .infinity, alignment: .topLeading)
-                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(notesFocused ? SoriTheme.secondary.opacity(0.35) : .clear, lineWidth: 1).allowsHitTesting(false))
-            }.frame(maxWidth: .infinity)
-            Rectangle().fill(SoriTheme.line).frame(width: 1)
-            VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    Text("북마크").font(.system(size: 14, weight: .medium))
-                    Spacer()
-                    Button { store.bookmark() } label: { Image(systemName: "plus").font(.system(size: 14)) }
-                        .buttonStyle(.plain).help("현재 위치에 북마크 · ⌘B").accessibilityLabel("현재 위치에 북마크 추가")
-                        .disabled(store.audio.duration == 0 || store.audio.isRecording)
-                }
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 12) {
-                        if recording.bookmarks.isEmpty {
-                            Text("다시 듣고 싶은 곳에 북마크를 남기세요.")
-                                .font(.system(size: 14)).foregroundStyle(SoriTheme.secondary).lineSpacing(5).fixedSize(horizontal: false, vertical: true).padding(.top, 7)
+                    ForEach(recording.bookmarks) { bookmark in
+                        HStack(alignment: .top) {
+                            Button {
+                                if let loop = store.audio.loopRange, !loop.contains(bookmark.time) { store.audio.clearLoop() }
+                                store.audio.seek(bookmark.time)
+                                if !store.audio.isPlaying { store.audio.togglePlayback() }
+                            } label: {
+                                HStack(alignment: .top, spacing: 7) {
+                                    Text(TimeText.clock(bookmark.time)).font(.system(size: 13)).monospacedDigit().foregroundStyle(SoriTheme.secondary).fixedSize()
+                                    Text(bookmark.label).font(.system(size: 14)).lineLimit(2).multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
+                                }
+                            }.buttonStyle(.plain).help(bookmark.label).disabled(store.audio.duration == 0 || store.audio.isRecording)
+                                .accessibilityLabel("\(TimeText.clock(bookmark.time)) 북마크 재생, \(bookmark.label)")
+                            Spacer(minLength: 0)
+                            Button { store.update(recording.id) { $0.bookmarks.removeAll { $0.id == bookmark.id } } } label: {
+                                Image(systemName: "xmark").font(.system(size: 12)).foregroundStyle(SoriTheme.secondary).padding(5)
+                            }.buttonStyle(.plain).help("북마크 삭제").accessibilityLabel("\(TimeText.clock(bookmark.time)) 북마크 삭제")
                         }
-                        ForEach(recording.bookmarks) { bookmark in
-                            HStack(alignment: .top) {
-                                Button {
-                                    if let loop = store.audio.loopRange, !loop.contains(bookmark.time) { store.audio.clearLoop() }
-                                    store.audio.seek(bookmark.time)
-                                    if !store.audio.isPlaying { store.audio.togglePlayback() }
-                                } label: {
-                                    HStack(alignment: .top, spacing: 7) {
-                                        Text(TimeText.clock(bookmark.time)).font(.system(size: 13)).monospacedDigit().foregroundStyle(SoriTheme.secondary).fixedSize()
-                                        Text(bookmark.label).font(.system(size: 14)).lineLimit(2).multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
-                                    }
-                                }.buttonStyle(.plain).help(bookmark.label).disabled(store.audio.duration == 0 || store.audio.isRecording)
-                                    .accessibilityLabel("\(TimeText.clock(bookmark.time)) 북마크 재생, \(bookmark.label)")
-                                Spacer(minLength: 0)
-                                Button { store.update(recording.id) { $0.bookmarks.removeAll { $0.id == bookmark.id } } } label: {
-                                    Image(systemName: "xmark").font(.system(size: 12)).foregroundStyle(SoriTheme.secondary).padding(5)
-                                }.buttonStyle(.plain).help("북마크 삭제").accessibilityLabel("\(TimeText.clock(bookmark.time)) 북마크 삭제")
-                            }
-                        }
-                    }.frame(maxWidth: .infinity, alignment: .leading)
-                }
-            }.frame(maxWidth: .infinity)
-        }.padding(20).background(SoriTheme.surface)
-            .overlay(alignment: .top) { Rectangle().fill(SoriTheme.line).frame(height: 1).allowsHitTesting(false) }
-            .onAppear { loadDraft() }
-            .onChange(of: draft) { _, _ in scheduleSave() }
-            .onChange(of: recording.id) { _, _ in flush(); loadDraft() }
-            .onChange(of: recording.notes) { _, value in
-                // Preserve a local edit if another part of the recording updates while typing.
-                if draft == savedDraft && value != savedDraft { savedDraft = value; draft = value }
+                    }
+                }.frame(maxWidth: .infinity, alignment: .leading)
             }
-            .onChange(of: store.unsavedIDs) { _, ids in
-                if !ids.contains(recording.id), recording.notes == draft { savedDraft = draft }
-            }
-            .onReceive(NotificationCenter.default.publisher(for: Notification.Name("BungBungiWillSave"))) { _ in flush() }
-            .onDisappear { flush() }
-    }
-
-    private func loadDraft() {
-        saveTask?.cancel()
-        draftOwner = recording.id
-        savedDraft = recording.notes
-        draft = recording.notes
-    }
-    private func scheduleSave() {
-        saveTask?.cancel()
-        guard let id = draftOwner, draft != savedDraft else { return }
-        let value = draft
-        saveTask = Task { @MainActor in
-            do { try await Task.sleep(for: .milliseconds(400)) } catch { return }
-            guard !Task.isCancelled, draftOwner == id, draft == value else { return }
-            if store.update(id, { $0.notes = value }) { savedDraft = value }
-        }
-    }
-    private func flush() {
-        saveTask?.cancel()
-        guard let id = draftOwner, draft != savedDraft else { return }
-        let value = draft
-        if store.update(id, { $0.notes = value }) { savedDraft = value }
+        }.frame(maxWidth: .infinity)
+            .padding(20).background(SoriTheme.surface)
     }
 }

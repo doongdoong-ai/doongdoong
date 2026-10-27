@@ -6,18 +6,12 @@ import SoriCore
 struct RecordingWorkspaceView: View {
     @Bindable var store: AppStore
     let recording: Recording
-    @State private var draft: RecordingNotesDraft
-    @State private var editor = MarkdownEditorController()
     @State private var collapsed: Bool
-    @State private var preview: Bool
-    @State private var showMarkdownHelp = false
 
     init(store: AppStore, recording: Recording) {
         self.store = store; self.recording = recording
-        _draft = State(initialValue: RecordingNotesDraft(store: store, recording: recording))
         let args = ProcessInfo.processInfo.arguments
         _collapsed = State(initialValue: args.contains("--recorder-collapsed-preview"))
-        _preview = State(initialValue: args.contains("--markdown-preview"))
     }
 
     var body: some View {
@@ -36,7 +30,7 @@ struct RecordingWorkspaceView: View {
             GeometryReader { geometry in
                 let sidebar = min(380, max(320, geometry.size.width * 0.30))
                 ZStack(alignment: .topLeading) {
-                    notes
+                    RecordingNotesPane(store: store, recording: recording)
                         .padding(.horizontal, collapsed ? 64 : 38)
                         .padding(.leading, collapsed ? 0 : sidebar)
                         .padding(.top, collapsed ? 90 : 22)
@@ -58,127 +52,10 @@ struct RecordingWorkspaceView: View {
             }
         }
         .background(SoriTheme.paper)
-        .onChange(of: recording.notes) { _, value in draft.synchronize(value) }
-        .onChange(of: store.unsavedIDs) { _, _ in draft.acknowledgeSave() }
-        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("BungBungiWillSave"))) { _ in
-            editor.endComposition(); draft.flush()
-        }
-        .onDisappear { draft.flush() }
-    }
-
-    private var notes: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .center) {
-                Text("수업 필기").font(.system(size: 27, weight: .semibold)).tracking(-0.8)
-                Spacer()
-                HStack(spacing: 2) {
-                    modeButton("작성", symbol: "pencil.line", selected: !preview) { preview = false; editor.focus() }
-                    modeButton("미리보기", symbol: "doc.text", selected: preview) {
-                        editor.blur(); preview = true
-                    }
-                }.padding(3).background(SoriTheme.sidebar, in: RoundedRectangle(cornerRadius: 9))
-            }.padding(.bottom, 23)
-
-            HStack(spacing: 3) {
-                formatButton("제목", symbol: "textformat.size", command: .heading)
-                formatButton("굵게 · ⌘B", symbol: "bold", command: .bold)
-                formatButton("기울임 · ⌘I", symbol: "italic", command: .italic)
-                toolbarDivider
-                formatButton("글머리 목록", symbol: "list.bullet", command: .bullet)
-                formatButton("체크 목록", symbol: "checklist", command: .task)
-                formatButton("인용", symbol: "text.quote", command: .quote)
-                formatButton("코드", symbol: "chevron.left.forwardslash.chevron.right", command: .code)
-                Spacer(minLength: 6)
-                Button {
-                    preview = false
-                    editor.perform(.timestamp(TimeText.clock(store.audio.recordingTime)))
-                } label: {
-                    Label("시간 넣기", systemImage: "clock").font(.system(size: 12, weight: .medium))
-                        .padding(.horizontal, 9).frame(height: 32)
-                }.buttonStyle(NotesToolStyle()).help("현재 녹음 시간을 필기에 남깁니다")
-            }.padding(.bottom, 12)
-            Rectangle().fill(SoriTheme.line).frame(height: 1)
-
-            ZStack(alignment: .topLeading) {
-                // Do not branch on collapsed/preview here: keep undo, selection,
-                // scroll position and marked text in this same NSTextView.
-                MarkdownNotesEditor(text: $draft.text, controller: editor, isEditing: !preview)
-                    .opacity(preview ? 0 : 1)
-                    .allowsHitTesting(!preview).accessibilityHidden(preview)
-                if preview { MarkdownNotesPreview(text: draft.text) }
-                if draft.text.isEmpty {
-                    VStack(alignment: .leading, spacing: 13) {
-                        Text("지금, 기억해 둘 내용").font(.system(size: 20, weight: .medium)).foregroundStyle(SoriTheme.secondary)
-                        Text("교수님이 강조한 내용, 떠오른 질문을 적어보세요.\n마크다운으로 쓰면 더 깔끔하게 정리할 수 있어요.")
-                            .font(.system(size: 14)).foregroundStyle(SoriTheme.secondary.opacity(0.75)).lineSpacing(6)
-                        Text(verbatim: "# 제목     **굵게**     - 목록")
-                            .font(.system(size: 12, design: .monospaced)).foregroundStyle(SoriTheme.secondary.opacity(0.6)).padding(.top, 6)
-                    }.padding(.leading, 6).padding(.top, 26).allowsHitTesting(false).accessibilityHidden(true)
-                }
-            }.frame(maxWidth: .infinity, maxHeight: .infinity)
-                // Native content should reflow, never crossfade on every keystroke.
-                .transaction { $0.animation = nil }
-
-            HStack(spacing: 6) {
-                let failed = store.unsavedIDs.contains(recording.id)
-                Image(systemName: failed ? "exclamationmark.circle" : draft.isDirty ? "ellipsis" : "checkmark")
-                Text(failed ? "저장하지 못했습니다" : draft.isDirty ? "저장 중…" : "자동 저장됨")
-                if failed { Button("다시 저장") { draft.flush() }.buttonStyle(.plain).underline() }
-                Spacer()
-                Button { showMarkdownHelp.toggle() } label: {
-                    HStack(spacing: 5) { Text("마크다운"); Image(systemName: "questionmark.circle") }
-                }.buttonStyle(.plain).help("마크다운 사용법")
-                    .popover(isPresented: $showMarkdownHelp, arrowEdge: .bottom) {
-                        VStack(alignment: .leading, spacing: 15) {
-                            Text("필기의 기본 문법").font(.system(size: 15, weight: .semibold))
-                            Text(verbatim: "# 제목\n**굵게**  ·  *기울임*\n- 목록\n- [ ] 할 일\n> 인용\n`코드`")
-                                .font(.system(size: 14, design: .monospaced)).lineSpacing(8)
-                            Text("목록에서 Enter를 누르면 이어 쓰고,\n빈 항목에서 한 번 더 누르면 마칩니다.")
-                                .font(.system(size: 12)).foregroundStyle(SoriTheme.secondary).lineSpacing(4)
-                        }.padding(22).frame(width: 280, alignment: .leading)
-                    }
-            }.font(.system(size: 12)).foregroundStyle(store.unsavedIDs.contains(recording.id) ? SoriTheme.recording : SoriTheme.secondary)
-                .padding(.top, 12).padding(.horizontal, 6)
-        }.frame(maxWidth: 820).frame(maxWidth: .infinity)
-    }
-
-    private var toolbarDivider: some View {
-        Rectangle().fill(SoriTheme.line).frame(width: 1, height: 17).padding(.horizontal, 6)
-    }
-
-    private func formatButton(_ title: String, symbol: String, command: MarkdownCommand) -> some View {
-        Button { preview = false; editor.perform(command) } label: {
-            Image(systemName: symbol).font(.system(size: 14, weight: .medium)).frame(width: 32, height: 32)
-        }.buttonStyle(NotesToolStyle()).help(title).accessibilityLabel(title)
-    }
-
-    private func modeButton(_ title: String, symbol: String, selected: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Label(title, systemImage: symbol).font(.system(size: 12, weight: selected ? .semibold : .regular))
-                .padding(.horizontal, 12).frame(height: 29)
-                .background(selected ? SoriTheme.paper : .clear, in: RoundedRectangle(cornerRadius: 7))
-                .foregroundStyle(selected ? SoriTheme.ink : SoriTheme.secondary)
-        }.buttonStyle(.plain).accessibilityAddTraits(selected ? .isSelected : [])
     }
 
     private func finish() {
-        editor.endComposition(); draft.flush()
         Task { await store.stopRecording() }
-    }
-}
-
-private struct NotesToolStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        ToolBody(configuration: configuration)
-    }
-    private struct ToolBody: View {
-        let configuration: Configuration
-        @State private var hovered = false
-        var body: some View {
-            configuration.label.foregroundStyle(SoriTheme.secondary)
-                .background(hovered || configuration.isPressed ? SoriTheme.sidebar : .clear, in: RoundedRectangle(cornerRadius: 6))
-                .onHover { hovered = $0 }
-        }
     }
 }
 
