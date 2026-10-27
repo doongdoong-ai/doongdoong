@@ -85,7 +85,7 @@ public struct ProcessingProgress: Equatable, Sendable {
             return .init(fraction: fraction, label: label, isEstimated: false, isTakingLonger: false)
         }
         if let estimatedDuration, estimatedDuration.isFinite, estimatedDuration > 0 {
-            let fraction = CorrectionProgressEstimate.fraction(elapsed: elapsed, expectedDuration: estimatedDuration)
+            let fraction = EstimatedProgressCurve.fraction(elapsed: elapsed, expectedDuration: estimatedDuration)
             return .init(fraction: fraction, label: "예상 \(Int(fraction * 100))%", isEstimated: true,
                          isTakingLonger: elapsed.isFinite && elapsed > estimatedDuration)
         }

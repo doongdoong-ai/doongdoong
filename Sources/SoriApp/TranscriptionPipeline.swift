@@ -89,7 +89,8 @@ enum TranscriptionPipeline {
             onProgress?(.init(stage: .correction, detail: "AI 연결을 확인하고 교정을 준비합니다."))
             let started = ProcessInfo.processInfo.systemUptime
             try await textProvider.checkConnection()
-            let estimatedDuration = CorrectionProgressEstimate.duration(characterCount: original.reduce(0) { $0 + $1.text.count })
+            let estimatedDuration = textProvider.estimatedDuration(for: .init(task: .correction,
+                characterCount: original.reduce(0) { $0 + $1.text.count }))
             let review = try await LectureReview.review(original, cacheURL: directory.appendingPathComponent("final-review.json"),
                 identity: textProvider.identity, onProgress: { value in
                     onProgress?(.init(stage: value.phase == .context ? .context : .correction,
@@ -157,10 +158,16 @@ enum TranscriptionPipeline {
         // Include synthesis in measured work, so a long lecture never shows 100%
         // before the final title and cards have actually been validated.
         let workCount = chunks.count + (chunks.count > 1 ? 1 : 0)
+        // Multiple sections already have measured progress. Only a single request
+        // needs the provider's clock estimate; no vendor formula belongs here.
+        let estimatedDuration = chunks.count == 1
+            ? provider.estimatedDuration(for: .init(task: .summary, characterCount: segments.reduce(0) { $0 + $1.text.count }))
+            : nil
         var drafts: [LectureAnalysis.Draft] = []
         for (index, chunk) in chunks.enumerated() {
             onProgress?(.init(stage: .analysis, detail: "교수가 강조한 내용과 시험 안내를 원문에서 확인합니다.",
-                completed: chunks.count > 1 ? Double(index) : nil, total: chunks.count > 1 ? Double(workCount) : nil))
+                completed: chunks.count > 1 ? Double(index) : nil, total: chunks.count > 1 ? Double(workCount) : nil,
+                estimatedDuration: estimatedDuration))
             let data = try await provider.generate(.init(instructions: lectureInstructions,
                 input: TranscriptCorrection.input(for: chunk), schema: LectureAnalysis.schema(for: chunk)))
             drafts.append(try LectureAnalysis.decode(data, source: chunk))
