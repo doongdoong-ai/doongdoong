@@ -235,7 +235,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         add("10초 뒤로", to: playback, action: #selector(backward), key: String(UnicodeScalar(NSLeftArrowFunctionKey)!), modifiers: .command)
         add("10초 앞으로", to: playback, action: #selector(forward), key: String(UnicodeScalar(NSRightArrowFunctionKey)!), modifiers: .command)
         playback.addItem(.separator())
-        add("북마크 추가", to: playback, action: #selector(bookmark), key: "b")
         add("집중 모드", to: playback, action: #selector(focus), key: "l", modifiers: [.command, .shift])
         attach(playback, title: "재생", to: menu)
 
@@ -276,7 +275,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     @objc private func playPause() { store.audio.togglePlayback() }
     @objc private func backward() { store.audio.seek(store.audio.currentTime - 10) }
     @objc private func forward() { store.audio.seek(store.audio.currentTime + 10) }
-    @objc private func bookmark() { store.bookmark() }
     @objc private func focus() { store.focusMode.toggle() }
     @objc private func demo() { Task { await store.addDemo() } }
     @objc private func findTranscript() {
@@ -329,7 +327,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             menuItem.title = store.audio.isPausedRecording ? "녹음 재개" : "녹음 일시 정지"
             return store.audio.isRecording
         case #selector(importAudio): return store.repository != nil && !store.isImporting
-        case #selector(playPause), #selector(backward), #selector(forward), #selector(bookmark):
+        case #selector(playPause), #selector(backward), #selector(forward):
             return store.selected != nil && store.audio.duration > 0 && !store.audio.isRecording
         case #selector(findTranscript):
             let notes = store.recordingID != nil || store.showNotes

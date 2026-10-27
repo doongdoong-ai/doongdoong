@@ -98,11 +98,7 @@ enum IntegrationCheck {
             guard !store.audio.isPlaying, abs(store.audio.currentTime - store.audio.duration) < 0.1 else { throw SoriError.message("End of playback did not stop cleanly") }
             store.audio.volume = 1
             store.audio.seek(6.5)
-            store.bookmark()
-            guard store.selected?.bookmarks.last?.time == 6.5 else { throw SoriError.message("Bookmark failed") }
-            store.bookmark()
-            guard store.selected?.bookmarks.count == 1 else { throw SoriError.message("Repeated bookmark created a duplicate") }
-            checks.append("audio decoding, bounded waveform, playback clock, speed, sentence repeat including EOF, seeking and bookmarks")
+            checks.append("audio decoding, bounded waveform, playback clock, speed, sentence repeat including EOF and seeking")
             if getuid() != 0 {
                 let directory = try repository.directory(for: recording)
                 try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: directory.path)
@@ -121,7 +117,7 @@ enum IntegrationCheck {
             store.move(store.selected!, to: target)
             guard store.selected?.projectID == target.id else { throw SoriError.message("Folder move failed") }
             let reloaded = try LibraryRepository(root: store.root).load().recordings
-            guard let saved = reloaded.first(where: { $0.id == recording.id }), saved.segments == recording.segments, saved.bookmarks.count == 1 else { throw SoriError.message("Persistence failed") }
+            guard let saved = reloaded.first(where: { $0.id == recording.id }), saved.segments == recording.segments else { throw SoriError.message("Persistence failed") }
             checks.append("folder move and complete reload from disk")
             let subtitles = Transcript.srt(saved.segments)
             guard subtitles.contains(" --> ") else { throw SoriError.message("SRT export failed") }
