@@ -1,6 +1,15 @@
 {
-  "originHash" : "85f857f274243da88d546140fb2f16e43d96e7bfac0510d3e2d4270d8f4cf4b7",
+  "originHash" : "cab68ee4fc7b457f5537d934efc7fd6b2b73ca0b068fc257fbaba51468bbae73",
   "pins" : [
+    {
+      "identity" : "claude-core",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/doongdoong-ai/claude-core.git",
+      "state" : {
+        "revision" : "8c1bd941550a66c3ddeda3af18fb8c169e1833fe",
+        "version" : "0.1.0"
+      }
+    },
     {
       "identity" : "codex-core",
       "kind" : "remoteSourceControl",

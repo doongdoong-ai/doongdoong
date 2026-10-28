@@ -9,7 +9,8 @@ struct AIConnectionPresentation {
     let action: Action
     let actionTitle: String
 
-    init(state: AppSettings.AIConnectionState) {
+    init(state: AppSettings.AIConnectionState, vendor: AIVendor) {
+        let account = vendor.accountName
         switch state {
         case .unchecked:
             self.init("AI를 연결해 주세요", "전사문 교정과 핵심 요약을 사용하려면 AI 연결이 필요합니다.", .retry, "연결 확인")
@@ -22,9 +23,11 @@ struct AIConnectionPresentation {
         case .blocked(let issue):
             switch issue.kind {
             case .installationRequired:
-                self.init("Codex를 준비해 주세요", "Codex를 설치하거나, 이미 설치했다면 설정에서 실행 경로를 확인해 주세요.", .configure, "설정 열기")
+                self.init("\(vendor.name)를 준비해 주세요", "\(vendor.name)를 설치하거나, 이미 설치했다면 설정에서 실행 경로를 확인해 주세요.", .configure, "설정 열기")
             case .loginRequired:
-                self.init("ChatGPT 로그인이 필요해요", "브라우저에서 로그인하면 둥둥이로 돌아와 연결을 확인합니다.", .signIn, "ChatGPT로 로그인")
+                self.init("\(account) 로그인이 필요해요", "브라우저에서 로그인하면 둥둥이로 돌아와 연결을 확인합니다.", .signIn, "\(account)로 로그인")
+            case .unsupportedAuthentication where vendor == .claude:
+                self.init("Claude 구독 계정으로 연결해 주세요", "API 키나 Console 로그인은 지원하지 않습니다. Claude Pro·Max 계정으로 다시 로그인해 주세요.", .signIn, "Claude로 로그인")
             case .unsupportedAuthentication:
                 self.init("ChatGPT 계정으로 연결해 주세요", "현재 로그인 방식은 둥둥이에서 지원하지 않습니다. ChatGPT 계정으로 다시 로그인해 주세요.", .signIn, "ChatGPT로 로그인")
             case .configuration:
@@ -40,7 +43,7 @@ struct AIConnectionPresentation {
                     ?? "사용량이 회복된 뒤 다시 확인해 주세요."
                 self.init("AI 사용 한도에 도달했어요", detail, .retry, "다시 확인")
             case .invalidResponse:
-                self.init("AI 응답을 확인하지 못했어요", "다시 시도해 주세요. 같은 문제가 계속되면 Codex를 업데이트한 뒤 확인해 주세요.", .retry, "다시 확인")
+                self.init("AI 응답을 확인하지 못했어요", "다시 시도해 주세요. 같은 문제가 계속되면 \(vendor.name)를 업데이트한 뒤 확인해 주세요.", .retry, "다시 확인")
             case .unknown:
                 self.init("AI 연결을 확인하지 못했어요", "다시 확인해 주세요. 문제가 계속되면 설정에서 AI 연결 상태와 진단 정보를 확인해 주세요.", .retry, "다시 확인")
             }
@@ -49,5 +52,39 @@ struct AIConnectionPresentation {
 
     private init(_ title: String, _ message: String, _ action: Action, _ actionTitle: String) {
         self.title = title; self.message = message; self.action = action; self.actionTitle = actionTitle
+    }
+}
+
+/// One compact status line per vendor, shared by the sidebar and vendor cards.
+@MainActor struct AIVendorStatus {
+    enum Tone { case neutral, ready, attention }
+    let label: String
+    var tone: Tone = .neutral
+    var model: String?
+    var busy = false
+
+    init(settings: AppSettings, vendor: AIVendor) {
+        guard settings.isInstalled(vendor) else { self.init("설치 필요", tone: .attention); return }
+        switch settings.connectionState(for: vendor) {
+        case .unchecked: self.init(vendor == settings.vendor ? "연결 확인 필요" : "설치됨")
+        case .checking: self.init("연결 확인 중", busy: true)
+        case .signingIn: self.init("로그인 대기 중", busy: true)
+        case .ready(let model): self.init("연결됨", tone: .ready, model: model.displayName)
+        case .blocked(let issue):
+            let label: String
+            switch issue.kind {
+            case .installationRequired: label = "설치 확인 필요"
+            case .loginRequired, .unsupportedAuthentication: label = "로그인 필요"
+            case .configuration: label = "설정 확인 필요"
+            case .usageLimited: label = "사용 한도 도달"
+            case .network, .serviceUnavailable: label = "연결 안 됨"
+            case .timedOut, .invalidResponse, .unknown: label = "연결 확인 실패"
+            }
+            self.init(label, tone: .attention)
+        }
+    }
+
+    private init(_ label: String, tone: Tone = .neutral, model: String? = nil, busy: Bool = false) {
+        self.label = label; self.tone = tone; self.model = model; self.busy = busy
     }
 }

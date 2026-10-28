@@ -8,8 +8,12 @@
 | FFmpeg | PCM 형식 변환 | 사용자 설치 빌드의 라이선스 적용 |
 | Codex CLI | 교정·제목·핵심 요약 | 별도 설치, 해당 배포 조건·계정 이용 조건 적용 |
 | Codex 표시 아이콘 | 설정 화면의 공급자 식별 | OpenAI 공식 VS Code 확장 배포 자산. OpenAI 상표·로고는 앱의 MIT 라이선스 대상이 아닙니다. |
+| Claude Code CLI | 교정·제목·핵심 요약 | 별도 설치, 해당 배포 조건·계정 이용 조건 적용 |
+| Claude 표시 아이콘 | 설정 화면의 공급자 식별 | Anthropic 공식 VS Code 확장 배포 자산. Anthropic 상표·로고는 앱의 MIT 라이선스 대상이 아닙니다. |
 
 Codex 아이콘은 [OpenAI 공식 확장의 아이콘 자산](https://openai.gallery.vsassets.io/_apis/public/gallery/publisher/openai/extension/chatgpt/latest/assetbyname/Microsoft.VisualStudio.Services.Icons.Default)에서 가져왔습니다. 공급자 식별을 위한 표시이며 OpenAI의 후원이나 제휴를 의미하지 않습니다.
+
+Claude 아이콘은 [Anthropic 공식 확장의 아이콘 자산](https://anthropic.gallery.vsassets.io/_apis/public/gallery/publisher/anthropic/extension/claude-code/latest/assetbyname/Microsoft.VisualStudio.Services.Icons.Default)에서 가져왔습니다. 공급자 식별을 위한 표시이며 Anthropic의 후원이나 제휴를 의미하지 않습니다.
 
 이전 Whisper·Silero 구성의 라이선스와 다운로드 기록은 전사 코어 0.1.2 태그에 보존합니다. 현재 앱은 해당 엔진과 모델을 설치하거나 호출하지 않습니다.
 

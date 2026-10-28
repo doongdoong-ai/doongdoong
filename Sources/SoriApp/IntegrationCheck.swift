@@ -68,8 +68,8 @@ enum IntegrationCheck {
                     throw SoriError.message("Sentence intervals are invalid")
                 }
             }
-            checks.append("completed audio file processed through \(selection.rawValue) with bounded file chunks and acoustic gap recovery")
-            checks.append("real \(selection.rawValue) lecture analysis through the existing ChatGPT login")
+            checks.append("completed audio file processed through \(selection.displayName) with bounded file chunks and acoustic gap recovery")
+            checks.append("real \(selection.displayName) lecture analysis through the existing \(selection.vendor.accountName) login")
             checks.append("whole-lecture final review preserves original text, IDs and acoustic playback times")
             checks.append("approximate sentence timings excluded from follow-along: \(recording.segments.filter { !$0.hasReliableTiming }.count); suspected gaps: \((recording.reviewRanges ?? []).count)")
             checks.append(usesExisting ? "lecture transcript has ordered, bounded acoustic intervals; uncertain positions are explicitly marked" : "beginning and end of the synthetic recording retained with ordered, bounded intervals")
@@ -123,7 +123,7 @@ enum IntegrationCheck {
             guard subtitles.contains(" --> ") else { throw SoriError.message("SRT export failed") }
             try Data(subtitles.utf8).write(to: store.root.appendingPathComponent("acceptance.srt"))
             checks.append("subtitle export")
-            let report: [String: Any] = ["passed": true, "checks": checks, "duration": saved.duration, "segments": saved.segments.count, "processingSeconds": processingSeconds, "scope": "batch-file-transcription-and-local-library", "model": selection.rawValue, "textCorrection": LectureReviewPrompts.version, "timing": "apple-speech-native", "syntheticAudio": !usesExisting]
+            let report: [String: Any] = ["passed": true, "checks": checks, "duration": saved.duration, "segments": saved.segments.count, "processingSeconds": processingSeconds, "scope": "batch-file-transcription-and-local-library", "provider": selection.vendor.rawValue, "model": selection.id, "textCorrection": LectureReviewPrompts.version, "timing": "apple-speech-native", "syntheticAudio": !usesExisting]
             try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: reportURL, options: .atomic)
             return true
         } catch {

@@ -4,7 +4,9 @@ import SwiftUI
 struct SidebarAIStatusView: View {
     let settings: AppSettings
     @State private var hovered = false
-    private static let providerIcon = NSImage(contentsOf: AppResources.directory.appendingPathComponent("codex-icon.png"))
+    private static let icons = Dictionary(uniqueKeysWithValues: AIVendor.allCases.map {
+        ($0, NSImage(contentsOf: AppResources.directory.appendingPathComponent($0.iconResource)))
+    })
 
     private struct Status {
         let label: String
@@ -15,24 +17,13 @@ struct SidebarAIStatusView: View {
 
     private var status: Status {
         guard settings.analysisEnabled else { return .init(label: "교정·요약 꺼짐") }
-        guard settings.codexReady else { return .init(label: "설치 확인 필요", color: Color(hex: 0xE5BD79)) }
-        switch settings.connectionState {
-        case .unchecked: return .init(label: "연결 확인 필요")
-        case .checking: return .init(label: "연결 확인 중", busy: true)
-        case .signingIn: return .init(label: "로그인 대기 중", busy: true)
-        case .ready(let model): return .init(label: "연결됨", color: Color(hex: 0x96C5A3), model: model.displayName)
-        case .blocked(let issue):
-            let label: String
-            switch issue.kind {
-            case .installationRequired: label = "설치 확인 필요"
-            case .loginRequired, .unsupportedAuthentication: label = "로그인 필요"
-            case .configuration: label = "설정 확인 필요"
-            case .usageLimited: label = "사용 한도 도달"
-            case .network, .serviceUnavailable: label = "연결 안 됨"
-            case .timedOut, .invalidResponse, .unknown: label = "연결 확인 실패"
-            }
-            return .init(label: label, color: Color(hex: 0xE5BD79))
+        let status = AIVendorStatus(settings: settings, vendor: settings.vendor)
+        let color: Color = switch status.tone {
+        case .neutral: .white.opacity(0.5)
+        case .ready: Color(hex: 0x96C5A3)
+        case .attention: Color(hex: 0xE5BD79)
         }
+        return .init(label: status.label, color: color, model: status.model, busy: status.busy)
     }
 
     var body: some View {
@@ -42,13 +33,13 @@ struct SidebarAIStatusView: View {
             NotificationCenter.default.post(name: Notification.Name("BungBungiShowSettings"), object: nil, userInfo: ["section": "providers"])
         } label: {
             HStack(spacing: 12) {
-                if let icon = Self.providerIcon {
+                if let icon = Self.icons[settings.vendor] ?? nil {
                     Image(nsImage: icon).resizable().scaledToFit().frame(width: 28, height: 28)
                         .clipShape(RoundedRectangle(cornerRadius: 7)).accessibilityHidden(true)
                 }
                 VStack(alignment: .leading, spacing: 5) {
                     HStack {
-                        Text("Codex").font(.system(size: 13, weight: .medium))
+                        Text(settings.vendor.name).font(.system(size: 13, weight: .medium))
                         Spacer(minLength: 0)
                         Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold))
                             .foregroundStyle(.white.opacity(hovered ? 0.8 : 0.4))
@@ -70,8 +61,8 @@ struct SidebarAIStatusView: View {
                 .background(Color(hex: hovered ? 0x272826 : 0x191A18))
                 .contentShape(Rectangle())
         }.buttonStyle(.plain).onHover { hovered = $0 }
-            .help("Codex · \(status.label)\(status.model.map { " · " + $0 } ?? "")\(lastCheck)\nAI 연결 설정 열기")
-            .accessibilityLabel("Codex, \(status.label)\(status.model.map { ", " + $0 } ?? "")")
+            .help("\(settings.vendor.name) · \(status.label)\(status.model.map { " · " + $0 } ?? "")\(lastCheck)\nAI 연결 설정 열기")
+            .accessibilityLabel("\(settings.vendor.name), \(status.label)\(status.model.map { ", " + $0 } ?? "")")
             .accessibilityHint("AI 연결 설정을 엽니다")
     }
 }
