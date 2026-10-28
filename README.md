@@ -2,8 +2,7 @@
 <img src="assets/brand/mark.svg" width="54" height="54" alt="둥둥이 로고">
 </p>
 <h1 align="center">둥둥이</h1>
-<p align="center"><strong>강의는 녹음만 하세요. 정리는 이미 쓰는 AI가 합니다.</strong></p>
-<p align="center">Mac 음성 인식 × Claude·Codex 구독으로 만드는 대학 강의 노트 · 오픈소스 macOS 앱</p>
+<p align="center"><strong>로컬 음성 인식 AI 기반의 대학교 강의 녹음 macOS 앱</strong></p>
 
 **Claude나 Codex를 구독 중인데, 강의 정리하려고 클로바노트·다글로까지 구독하고 계세요?**
 
