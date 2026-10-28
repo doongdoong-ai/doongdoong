@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="880" height="296" viewBox="0 0 880 296" font-family="-apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="262" viewBox="0 0 880 262" font-family="-apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif">
 <title>같은 15분 강의를 전사하는 데 걸린 시간</title>
-<rect width="880" height="296" rx="16" fill="#fbfaf6"/>
+<rect width="880" height="262" rx="16" fill="#fbfaf6"/>
 <text x="40" y="54" font-size="21" font-weight="700" fill="#22221f">같은 15분 강의를 전사하는 데 걸린 시간</text>
 <text x="40" y="82" font-size="14" fill="#5f5d56">금융 강의 15분 · 같은 18개 구간 · 교정·요약 제외 · 짧을수록 빠름</text>
 <line x1="244.0" y1="108" x2="244.0" y2="205.0" stroke="#e6e4dc" stroke-width="1"/>
@@ -13,11 +13,10 @@
 <text x="637.0" y="225.0" font-size="12" fill="#8a887f" text-anchor="middle">90초</text>
 <line x1="768.0" y1="108" x2="768.0" y2="205.0" stroke="#e6e4dc" stroke-width="1"/>
 <text x="768.0" y="225.0" font-size="12" fill="#8a887f" text-anchor="middle">120초</text>
-<text x="228" y="135.0" font-size="15" font-weight="700" fill="#22221f" text-anchor="end">Apple Speech</text>
+<text x="228" y="135.0" font-size="15" font-weight="700" fill="#22221f" text-anchor="end">둥둥이</text>
 <path d="M244,118 H280.91566666666665 Q284.91566666666665,118 284.91566666666665,122 V138 Q284.91566666666665,142 280.91566666666665,142 H244 Z" fill="#c4553f"/>
 <text x="294.91566666666665" y="135.0" font-size="15" font-weight="700" fill="#22221f">9.37초 · 약 12.3배 빠름</text>
 <text x="228" y="185.0" font-size="15" font-weight="400" fill="#5f5d56" text-anchor="end">기존 Whisper 구현</text>
 <path d="M244,168 H744.9613333333334 Q748.9613333333334,168 748.9613333333334,172 V188 Q748.9613333333334,192 744.9613333333334,192 H244 Z" fill="#b4b2a8"/>
 <text x="758.9613333333334" y="185.0" font-size="15" font-weight="400" fill="#5f5d56">115.64초</text>
-<text x="40" y="270" font-size="12" fill="#8a887f">둥둥이 자체 측정 · MacBook Air M1 8GB · macOS 26.3 · whisper.cpp large-v3-turbo + Silero VAD · 조건별 1회</text>
 </svg>

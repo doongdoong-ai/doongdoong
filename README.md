@@ -44,15 +44,15 @@
 
 ### 15분 강의를 약 9초 만에
 
-M1·8GB MacBook Air에서 같은 금융 강의 15분을 같은 18개 구간으로 나눠 비교했습니다. Apple Speech는 **9.37초**, 이전에 쓰던 Whisper 구현은 **115.64초**로 약 **12.3배** 빨랐습니다.
+M1·8GB MacBook Air에서 같은 금융 강의 15분을 같은 18개 구간으로 나눠 비교했습니다. 둥둥이는 **9.37초**, 이전에 쓰던 Whisper 구현은 **115.64초**로 약 **12.3배** 빨랐습니다.
 
-![같은 15분 금융 강의 전사 시간 막대 그래프. Apple Speech 9.37초, 기존 Whisper 구현 115.64초](assets/readme/charts/transcription-speed.png)
+![같은 15분 금융 강의 전사 시간 막대 그래프. 둥둥이 9.37초, 기존 Whisper 구현 115.64초](assets/readme/charts/transcription-speed.png)
 
 ### 한국어 정확도는 Whisper Large V3 Turbo와 비슷하게
 
-공개 한국어 낭독 벤치마크(FLEURS)에서 Apple SpeechTranscriber의 문자 오류율은 **4.31%** 로, Whisper Large V3 Turbo(**4.25%**)와 0.06%p 차이였습니다. Apple의 이전 받아쓰기 모델(7.11%)이나 Whisper Small(7.30%)보다 오류가 적습니다.
+공개 한국어 낭독 벤치마크(FLEURS)에서 둥둥이가 쓰는 Apple SpeechTranscriber의 문자 오류율은 **4.31%** 로, Whisper Large V3 Turbo(**4.25%**)와 0.06%p 차이였습니다. Apple의 이전 받아쓰기 모델(7.11%)이나 Whisper Small(7.30%)보다 오류가 적습니다.
 
-![한국어 문자 오류율 막대 그래프. Qwen3-ASR 1.7B 3.54%, Whisper Large V3 Turbo 4.25%, Apple SpeechTranscriber 4.31%, Apple Dictation 7.11%, Whisper Small 7.30%, SenseVoice Small 7.85%](assets/readme/charts/korean-cer.png)
+![한국어 문자 오류율 막대 그래프. Qwen3-ASR 1.7B 3.54%, Whisper Large V3 Turbo 4.25%, 둥둥이 4.31%, Apple Dictation 7.11%, Whisper Small 7.30%, SenseVoice Small 7.85%](assets/readme/charts/korean-cer.png)
 ### 모델은 macOS가 관리
 
 언어 모델을 한 번 준비해 두면 인터넷 없이도 음성을 인식합니다. 모델 저장과 업데이트는 시스템이 맡으니 따로 내려받고 관리할 필요가 없습니다.

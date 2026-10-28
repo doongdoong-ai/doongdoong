@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="880" height="460" viewBox="0 0 880 460" font-family="-apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="426" viewBox="0 0 880 426" font-family="-apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif">
 <title>한국어 문자 오류율(CER)</title>
-<rect width="880" height="460" rx="16" fill="#fbfaf6"/>
+<rect width="880" height="426" rx="16" fill="#fbfaf6"/>
 <text x="40" y="54" font-size="21" font-weight="700" fill="#22221f">한국어 문자 오류율(CER)</text>
 <text x="40" y="82" font-size="14" fill="#5f5d56">FLEURS 한국어 약 150문장 · 낮을수록 정확</text>
 <line x1="244.0" y1="108" x2="244.0" y2="371.0" stroke="#e6e4dc" stroke-width="1"/>
@@ -19,7 +19,7 @@
 <text x="228" y="178.0" font-size="15" font-weight="400" fill="#5f5d56" text-anchor="end">Whisper Large V3 Turbo</text>
 <path d="M244,162 H518.375 Q522.375,162 522.375,166 V180 Q522.375,184 518.375,184 H244 Z" fill="#b4b2a8"/>
 <text x="532.375" y="178.0" font-size="15" font-weight="400" fill="#5f5d56">4.25%</text>
-<text x="228" y="222.0" font-size="15" font-weight="700" fill="#22221f" text-anchor="end">Apple SpeechTranscriber</text>
+<text x="228" y="222.0" font-size="15" font-weight="700" fill="#22221f" text-anchor="end">둥둥이</text>
 <path d="M244,206 H522.305 Q526.305,206 526.305,210 V224 Q526.305,228 522.305,228 H244 Z" fill="#c4553f"/>
 <text x="536.305" y="222.0" font-size="15" font-weight="700" fill="#22221f">4.31%</text>
 <text x="228" y="266.0" font-size="15" font-weight="400" fill="#5f5d56" text-anchor="end">Apple Dictation</text>
@@ -31,5 +31,4 @@
 <text x="228" y="354.0" font-size="15" font-weight="400" fill="#5f5d56" text-anchor="end">SenseVoice Small</text>
 <path d="M244,338 H754.175 Q758.175,338 758.175,342 V356 Q758.175,360 754.175,360 H244 Z" fill="#b4b2a8"/>
 <text x="768.175" y="354.0" font-size="15" font-weight="400" fill="#5f5d56">7.85%</text>
-<text x="40" y="434" font-size="12" fill="#8a887f">출처: Whisper Notes Team, 2026-09-01 · M5 MacBook Air · 외부 측정이며 둥둥이가 재실행하지 않음</text>
 </svg>
