@@ -23,6 +23,15 @@ func cardRect(_ img: NSImage) -> NSRect {
     let w = img.size.width * s, h = img.size.height * s
     return NSRect(x: area.midX - w/2, y: area.minY, width: w, height: h)
 }
+// Same geometry as frame-window.swift.
+func drawTrafficLights(in rect: NSRect, scale: CGFloat, alpha: CGFloat) {
+    let colors: [(CGFloat, CGFloat, CGFloat)] = [(1, 0.373, 0.341), (0.996, 0.737, 0.18), (0.157, 0.784, 0.251)]
+    for (i, c) in colors.enumerated() {
+        let d = 12 * scale, cx = rect.minX + (20 + CGFloat(i) * 20) * scale, cy = rect.maxY - 18 * scale
+        NSColor(srgbRed: c.0, green: c.1, blue: c.2, alpha: alpha).setFill()
+        NSBezierPath(ovalIn: NSRect(x: cx - d / 2, y: cy - d / 2, width: d, height: d)).fill()
+    }
+}
 func drawCard(_ img: NSImage, alpha: CGFloat, dy: CGFloat) {
     var r = cardRect(img); r.origin.y -= dy
     NSGraphicsContext.saveGraphicsState()
@@ -32,6 +41,7 @@ func drawCard(_ img: NSImage, alpha: CGFloat, dy: CGFloat) {
     NSGraphicsContext.saveGraphicsState()
     NSBezierPath(roundedRect: r, xRadius: 14, yRadius: 14).addClip()
     img.draw(in: r, from: .zero, operation: .sourceOver, fraction: alpha)
+    drawTrafficLights(in: r, scale: r.width / img.size.width, alpha: alpha)
     NSGraphicsContext.restoreGraphicsState()
     NSColor.black.withAlphaComponent(0.08 * alpha).setStroke()
     let border = NSBezierPath(roundedRect: r.insetBy(dx: 0.5, dy: 0.5), xRadius: 14, yRadius: 14); border.lineWidth = 1; border.stroke()

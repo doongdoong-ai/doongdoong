@@ -11,11 +11,11 @@
 | `app-ai-vendor.png` | `--providers-preview --providers-claude-preview` | AI 연결 설정, 1640 × 1400 |
 | `tour.gif` | 위 캡처 + Codex 선택 상태 설정 화면 | 소개 영상, 1200 × 750, 약 17초 |
 
-모든 캡처에 `--sidebar-ai-preview --providers-claude-preview`를 함께 지정했다.
+모든 캡처에 `--sidebar-ai-preview --providers-claude-preview`를 함께 지정했다. README의 PNG는 원본 캡처에 `scripts/frame-window.swift`로 macOS 창 모서리·신호등 버튼·그림자만 덧그린 것이며, 크기는 원본보다 사방 56pt 넓다. 원본 캡처는 비공개 `.local/readme-captures-2026-10-28/shots/`에 보존한다.
 
 과목·녹음 제목, 전사문, 강조 카드, 필기는 화면 소개를 위해 직접 작성한 가상 데이터다. 실제 수업이나 AI 분석 결과가 아니다. 파형과 재생 길이는 앱에 포함된 27초 데모 음성을 반복해 만든 75분 음성에서 왔으며, 화면의 가상 강의와 일치하는 녹음으로 주장하지 않는다. 캡처에는 UI가 표시한 내용을 그대로 담았고 이미지 생성으로 화면을 재구성하지 않았다.
 
-`tour.gif`는 `scripts/render-readme-tour.swift`가 캡처에 배경·문구·전환·커서만 덧그린 프레임을 ffmpeg로 인코딩한 것이다. AI 전환 장면은 Codex 선택 화면과 Claude 선택 화면 두 캡처를 교차 전환해 클릭을 표현했다.
+`tour.gif`는 `scripts/render-readme-tour.swift`가 캡처에 배경·문구·전환·커서·신호등 버튼만 덧그린 프레임을 ffmpeg로 인코딩한 것이다. AI 전환 장면은 Codex 선택 화면과 Claude 선택 화면 두 캡처를 교차 전환해 클릭을 표현했다.
 
 ```sh
 swiftc -O scripts/render-readme-tour.swift -o /tmp/render-tour
