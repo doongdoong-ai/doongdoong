@@ -162,10 +162,12 @@ final class ConnectionSetupTests: XCTestCase {
     }
 
     @MainActor func testEveryFailureHasAnActionAndUnknownDoesNotPretendLoginRequired() {
+        for vendor in AIVendor.allCases {
         for kind in ProviderConnectionIssue.Kind.allCases {
-            let view = AIConnectionPresentation(state: .blocked(.init(kind, stage: .probe)))
+            let view = AIConnectionPresentation(state: .blocked(.init(kind, stage: .probe)), vendor: vendor)
             XCTAssertFalse(view.title.isEmpty); XCTAssertFalse(view.message.isEmpty); XCTAssertFalse(view.actionTitle.isEmpty)
             if [.unknown, .network, .serviceUnavailable, .usageLimited].contains(kind) { XCTAssertEqual(view.action, .retry) }
+        }
         }
     }
 }

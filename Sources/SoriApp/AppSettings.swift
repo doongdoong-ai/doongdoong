@@ -5,44 +5,107 @@ import SoriSpeech
 import DoongdoongTranscription
 import DoongdoongAI
 import DoongdoongCodex
+import DoongdoongClaude
+
+/// Text-generation vendors. Each keeps its own CLI, login and model settings.
+enum AIVendor: String, CaseIterable, Identifiable {
+    case codex, claude
+    var id: String { rawValue }
+    var name: String { self == .codex ? "Codex" : "Claude" }
+    var accountName: String { self == .codex ? "ChatGPT" : "Claude" }
+    var executableName: String { rawValue }
+    var iconResource: String { "\(rawValue)-icon.png" }
+    @MainActor var installationCommand: String { self == .codex ? CodexConnection.installationCommand : ClaudeConnection.installationCommand }
+}
+
+/// The verified model of the active vendor, ready to compose a provider.
+struct AIModelSelection: Equatable {
+    let vendor: AIVendor
+    let id: String
+    let displayName: String
+}
 
 @Observable @MainActor
 final class AppSettings {
     var language: String { didSet { defaults.set(language, forKey: "language"); refreshSpeechAvailability() } }
-    var codexPath: String { didSet { defaults.set(codexPath, forKey: "codexPath"); refreshAIConnection() } }
+    var vendor: AIVendor { didSet { defaults.set(vendor.rawValue, forKey: "aiVendor"); switchVendor(from: oldValue) } }
+    var codexPath: String { didSet { defaults.set(codexPath, forKey: "codexPath"); vendorSettingsChanged(.codex, recheck: true) } }
+    var claudePath: String { didSet { defaults.set(claudePath, forKey: "claudePath"); vendorSettingsChanged(.claude, recheck: true) } }
     var ffmpegPath: String { didSet { defaults.set(ffmpegPath, forKey: "ffmpegPath") } }
     var analysisEnabled: Bool { didSet { defaults.set(analysisEnabled, forKey: "analysisEnabled") } }
-    var preferredModelID: String { didSet { defaults.set(preferredModelID, forKey: "codexPreferredModel"); selectFromCatalog() } }
-    var reasoningEffort: ReasoningEffort { didSet { defaults.set(reasoningEffort.rawValue, forKey: "codexReasoningEffort"); selectFromCatalog() } }
+    var preferredModelID: String { didSet { defaults.set(preferredModelID, forKey: "codexPreferredModel"); vendorSettingsChanged(.codex) } }
+    var reasoningEffort: ReasoningEffort { didSet { defaults.set(reasoningEffort.rawValue, forKey: "codexReasoningEffort"); vendorSettingsChanged(.codex) } }
+    var claudeEffort: ClaudeEffort { didSet { defaults.set(claudeEffort.rawValue, forKey: "claudeEffort"); vendorSettingsChanged(.claude) } }
     var requestTimeout: Double { didSet { defaults.set(requestTimeout, forKey: "codexRequestTimeout") } }
     private let defaults: UserDefaults
     private let speechAvailabilityResolver: @Sendable (SpeechConfiguration) async -> SpeechAvailability
     struct ConnectionVerification {
         let catalog: CodexCatalog?
         let result: Result<TextProviderIdentity, ProviderConnectionIssue>
+        /// The concrete model an alias resolved to, when the vendor reports it.
+        var modelName: String? = nil
     }
     typealias ConnectionVerifier = @MainActor (URL, String, ReasoningEffort) async throws -> ConnectionVerification
+    typealias ClaudeVerifier = @MainActor (URL, ClaudeEffort) async throws -> ConnectionVerification
     typealias BrowserLogin = @MainActor (URL, @escaping @MainActor (URL) -> Bool) async throws -> Void
+    typealias ClaudeLogin = @MainActor (URL) async throws -> Void
     private let connectionVerifier: ConnectionVerifier
+    private let claudeVerifier: ClaudeVerifier
     private let browserLogin: BrowserLogin
+    private let claudeLogin: ClaudeLogin
     private(set) var catalog: CodexCatalog?
     private(set) var lastConnectionCheck: Date?
     private(set) var connectionState: AIConnectionState = .unchecked
     private var connectionTask: Task<Void, Never>?
     private var connectionGeneration = UUID()
+    /// Settled results of vendors that are not active, so switching back is instant.
+    private var settled: [AIVendor: SettledConnection] = [:]
+    private struct SettledConnection { let state: AIConnectionState; let checked: Date?; let catalog: CodexCatalog? }
     var showConnectionSetup = false
     private(set) var hasCompletedAISetup: Bool
 
     enum AIConnectionState: Equatable {
-        case unchecked, checking, signingIn, ready(CodexModel), blocked(ProviderConnectionIssue)
+        case unchecked, checking, signingIn, ready(AIModelSelection), blocked(ProviderConnectionIssue)
     }
     var connectionIssue: ProviderConnectionIssue? {
         if case .blocked(let issue) = connectionState { return issue }
         return nil
     }
-    var selectedModel: CodexModel? {
+    var selectedModel: AIModelSelection? {
         if case .ready(let model) = connectionState { return model }
         return nil
+    }
+    func executablePath(for vendor: AIVendor) -> String { vendor == .codex ? codexPath : claudePath }
+    func isInstalled(_ vendor: AIVendor) -> Bool { FileManager.default.isExecutableFile(atPath: executablePath(for: vendor)) }
+    /// Last known state of any vendor without starting a check.
+    func connectionState(for vendor: AIVendor) -> AIConnectionState {
+        vendor == self.vendor ? connectionState : settled[vendor]?.state ?? .unchecked
+    }
+    func lastConnectionCheck(for vendor: AIVendor) -> Date? {
+        vendor == self.vendor ? lastConnectionCheck : settled[vendor]?.checked
+    }
+
+    private func switchVendor(from previous: AIVendor) {
+        guard previous != vendor else { return }
+        let state = connectionState, checked = lastConnectionCheck, previousCatalog = catalog
+        cancelAIConnectionCheck()
+        switch state {
+        case .ready, .blocked: settled[previous] = .init(state: state, checked: checked, catalog: previousCatalog)
+        default: settled[previous] = nil
+        }
+        if let restored = settled.removeValue(forKey: vendor) {
+            connectionState = restored.state; lastConnectionCheck = restored.checked; catalog = restored.catalog
+        } else {
+            lastConnectionCheck = nil
+            if analysisEnabled { refreshAIConnection(presentOnFailure: false) }
+        }
+    }
+    private func vendorSettingsChanged(_ changed: AIVendor, recheck: Bool = false) {
+        settled[changed] = nil
+        guard changed == vendor else { return }
+        // A changed executable is checked right away. A changed model or effort
+        // is invalidated; catalog membership cannot verify the new choice.
+        if recheck { refreshAIConnection() } else { cancelAIConnectionCheck() }
     }
     var checkingAI: Bool { connectionState == .checking || connectionState == .signingIn }
     var availableModels: [CodexModelOption] { catalog?.models ?? [] }
@@ -53,24 +116,23 @@ final class AppSettings {
             availableModels.contains { choices.contains($0.model) && $0.reasoningEfforts.contains(effort) }
         }
     }
-    private func selectFromCatalog() {
-        // Catalog membership cannot verify the newly selected configuration.
-        // Invalidate immediately; the user can explicitly check the new choice.
-        cancelAIConnectionCheck()
-    }
-    var aiConnectionMessage: String { AIConnectionPresentation(state: connectionState).message }
+    var aiConnectionMessage: String { AIConnectionPresentation(state: connectionState, vendor: vendor).message }
 
     /// One bounded check per launch or explicit retry, never a retry loop.
     @discardableResult func refreshAIConnection(presentOnFailure: Bool = false) -> Task<Void, Never>? {
         cancelAIConnectionCheck()
         connectionState = .checking
         catalog = nil
-        let generation = connectionGeneration
-        let executable = URL(fileURLWithPath: codexPath), preferred = preferredModelID, effort = reasoningEffort
-        let verify = connectionVerifier
+        let generation = connectionGeneration, vendor = self.vendor
+        let executable = URL(fileURLWithPath: executablePath(for: vendor)), preferred = preferredModelID
+        let effort = reasoningEffort, claudeEffort = self.claudeEffort
+        let verifyCodex = connectionVerifier, verifyClaude = claudeVerifier
         connectionTask = Task { [weak self] in
             let verification: ConnectionVerification
-            do { verification = try await verify(executable, preferred, effort) }
+            do {
+                verification = vendor == .codex ? try await verifyCodex(executable, preferred, effort)
+                    : try await verifyClaude(executable, claudeEffort)
+            }
             catch {
                 guard let self, self.connectionGeneration == generation else { return }
                 self.connectionTask = nil
@@ -85,16 +147,15 @@ final class AppSettings {
             self.catalog = verification.catalog
             switch verification.result {
             case .success(let identity):
-                guard identity.provider == "codex", identity.reasoningEffort == effort.rawValue,
-                      let model = CodexModel(rawValue: identity.model),
-                      preferred.isEmpty || preferred == identity.model else {
+                guard let model = Self.selection(vendor: vendor, identity: identity, modelName: verification.modelName,
+                          preferred: preferred, effort: vendor == .codex ? effort.rawValue : claudeEffort.rawValue) else {
                     self.connectionState = .blocked(.init(.invalidResponse, stage: .probe))
                     if presentOnFailure && self.analysisEnabled { self.showConnectionSetup = true }
                     self.connectionTask = nil; return
                 }
                 self.connectionState = .ready(model)
                 self.hasCompletedAISetup = true
-                self.defaults.set(true, forKey: "aiSetup.codex.completed")
+                self.defaults.set(true, forKey: "aiSetup.\(vendor.rawValue).completed")
             case .failure(let issue):
                 self.connectionState = .blocked(issue)
                 if presentOnFailure && self.analysisEnabled { self.showConnectionSetup = true }
@@ -107,10 +168,11 @@ final class AppSettings {
     @discardableResult func signIn(openBrowser: @escaping @MainActor (URL) -> Bool) -> Task<Void, Never> {
         cancelAIConnectionCheck()
         connectionState = .signingIn
-        let generation = connectionGeneration, executable = URL(fileURLWithPath: codexPath), login = browserLogin
+        let generation = connectionGeneration, executable = URL(fileURLWithPath: executablePath(for: vendor))
+        let vendor = self.vendor, codexLogin = browserLogin, claudeLogin = self.claudeLogin
         let task = Task { [weak self] in
             do {
-                try await login(executable, openBrowser)
+                if vendor == .codex { try await codexLogin(executable, openBrowser) } else { try await claudeLogin(executable) }
                 guard let self, !Task.isCancelled, self.connectionGeneration == generation else { return }
                 // A browser callback alone never marks setup complete.
                 self.connectionTask = nil
@@ -128,7 +190,7 @@ final class AppSettings {
 
     func presentConnectionSetup() {
         showConnectionSetup = true
-        if connectionState == .unchecked || (selectedModel != nil && !codexReady) { refreshAIConnection() }
+        if connectionState == .unchecked || (selectedModel != nil && !aiInstalled) { refreshAIConnection() }
     }
     func dismissConnectionSetup() {
         if checkingAI { cancelAIConnectionCheck() }
@@ -138,6 +200,31 @@ final class AppSettings {
         connectionGeneration = UUID()
         connectionTask?.cancel(); connectionTask = nil
         connectionState = .unchecked
+    }
+
+    /// Only an identity matching the requested vendor and settings becomes a selection.
+    static func selection(vendor: AIVendor, identity: TextProviderIdentity, modelName: String?,
+                          preferred: String, effort: String) -> AIModelSelection? {
+        guard identity.provider == vendor.rawValue, identity.reasoningEffort == effort else { return nil }
+        switch vendor {
+        case .codex:
+            guard let model = CodexModel(rawValue: identity.model), preferred.isEmpty || preferred == identity.model else { return nil }
+            return .init(vendor: .codex, id: model.rawValue, displayName: model.displayName)
+        case .claude:
+            guard let model = ClaudeModel(rawValue: identity.model) else { return nil }
+            return .init(vendor: .claude, id: model.rawValue, displayName: modelName ?? model.displayName)
+        }
+    }
+
+    static func verifyClaude(executable: URL, effort: ClaudeEffort) async throws -> ConnectionVerification {
+        let connection = ClaudeConnection(executable: executable, model: .sonnet, effort: effort)
+        do {
+            let identity = try await connection.verifyConnection()
+            return .init(catalog: nil, result: .success(identity), modelName: connection.resolvedModelName)
+        } catch {
+            if error is CancellationError || Task.isCancelled { throw CancellationError() }
+            return .init(catalog: nil, result: .failure((error as? ProviderConnectionIssue) ?? .init(.unknown, stage: .probe)))
+        }
     }
 
     static func verifyCodex(executable: URL, preferred: String, effort: ReasoningEffort) async throws -> ConnectionVerification {
@@ -158,12 +245,16 @@ final class AppSettings {
     init(defaults: UserDefaults = .standard,
          connectionVerifier: @escaping ConnectionVerifier = AppSettings.verifyCodex,
          browserLogin: @escaping BrowserLogin = { try await CodexBrowserLogin.signIn(executable: $0, openBrowser: $1) },
+         claudeVerifier: @escaping ClaudeVerifier = AppSettings.verifyClaude,
+         claudeLogin: @escaping ClaudeLogin = { try await ClaudeBrowserLogin.signIn(executable: $0) },
          speechAvailabilityResolver: @escaping @Sendable (SpeechConfiguration) async -> SpeechAvailability = { await AppleSpeechEngine.availability(configuration: $0) }) {
         self.defaults = defaults
         self.speechAvailabilityResolver = speechAvailabilityResolver
         self.connectionVerifier = connectionVerifier
+        self.claudeVerifier = claudeVerifier
         self.browserLogin = browserLogin
-        hasCompletedAISetup = defaults.bool(forKey: "aiSetup.codex.completed")
+        self.claudeLogin = claudeLogin
+        hasCompletedAISetup = AIVendor.allCases.contains { defaults.bool(forKey: "aiSetup.\($0.rawValue).completed") }
         if let legacy = UserDefaults(suiteName: "app.sori.mac") {
             for key in ["language", "codexPath", "ffmpegPath"] where defaults.object(forKey: key) == nil {
                 if let value = legacy.object(forKey: key) { defaults.set(value, forKey: key) }
@@ -172,11 +263,17 @@ final class AppSettings {
         let savedLanguage = defaults.string(forKey: "language") ?? "ko"
         language = savedLanguage == "auto" ? "ko" : savedLanguage
         defaults.set(savedLanguage == "auto" ? "ko" : savedLanguage, forKey: "language")
-        codexPath = defaults.string(forKey: "codexPath") ?? Self.find("codex")
+        let codex = defaults.string(forKey: "codexPath") ?? Self.find("codex")
+        let claude = defaults.string(forKey: "claudePath") ?? Self.find("claude")
+        codexPath = codex; claudePath = claude
+        // Existing users keep Codex. A new user without Codex starts with an installed Claude.
+        if let saved = defaults.string(forKey: "aiVendor").flatMap(AIVendor.init(rawValue:)) { vendor = saved }
+        else { vendor = !FileManager.default.isExecutableFile(atPath: codex) && FileManager.default.isExecutableFile(atPath: claude) ? .claude : .codex }
         ffmpegPath = defaults.string(forKey: "ffmpegPath") ?? Self.find("ffmpeg")
         analysisEnabled = defaults.object(forKey: "analysisEnabled") == nil || defaults.bool(forKey: "analysisEnabled")
         preferredModelID = defaults.string(forKey: "codexPreferredModel") ?? ""
         reasoningEffort = ReasoningEffort(rawValue: defaults.string(forKey: "codexReasoningEffort") ?? "") ?? .medium
+        claudeEffort = ClaudeEffort(rawValue: defaults.string(forKey: "claudeEffort") ?? "") ?? .medium
         let timeout = defaults.double(forKey: "codexRequestTimeout")
         requestTimeout = timeout.isFinite && (30...1800).contains(timeout) ? timeout : 300
     }
@@ -257,15 +354,24 @@ final class AppSettings {
         guard speechGeneration == generation else { return }
         speechPreparation = progress
     }
-    var codexReady: Bool { FileManager.default.isExecutableFile(atPath: codexPath) }
-    var analysisReady: Bool { analysisEnabled && codexReady && selectedModel != nil }
+    /// The active vendor's CLI is installed at its configured path.
+    var aiInstalled: Bool { isInstalled(vendor) }
+    var analysisReady: Bool { analysisEnabled && aiInstalled && selectedModel?.vendor == vendor }
     var transcriptionConfiguration: SpeechConfiguration { .init(language: language) }
 
     // Compose a provider from the current vendor settings once per job. Its
     // immutable configuration keeps later UI changes out of the running job.
     func makeTextProvider() -> (any TextGenerationProvider)? {
         guard analysisEnabled, let model = selectedModel else { return nil }
-        return CodexTextProvider(configuration: .init(executable: URL(fileURLWithPath: codexPath), model: model,
-            reasoningEffort: reasoningEffort, requestTimeout: requestTimeout))
+        switch model.vendor {
+        case .codex:
+            guard let codexModel = CodexModel(rawValue: model.id) else { return nil }
+            return CodexTextProvider(configuration: .init(executable: URL(fileURLWithPath: codexPath), model: codexModel,
+                reasoningEffort: reasoningEffort, requestTimeout: requestTimeout))
+        case .claude:
+            guard let claudeModel = ClaudeModel(rawValue: model.id) else { return nil }
+            return ClaudeTextProvider(configuration: .init(executable: URL(fileURLWithPath: claudePath), model: claudeModel,
+                effort: claudeEffort, requestTimeout: requestTimeout))
+        }
     }
 }

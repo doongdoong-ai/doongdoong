@@ -25,7 +25,7 @@ final class ModelSelectionTests: XCTestCase {
         XCTAssertNil(settings.selectedModel, "Unsupported effort must not silently fall back")
         settings.reasoningEffort = .medium
         await settings.refreshAIConnection()?.value
-        XCTAssertEqual(settings.selectedModel, .luna)
+        XCTAssertEqual(settings.selectedModel?.id, CodexModel.luna.rawValue)
         settings.analysisEnabled = false
         XCTAssertNil(settings.makeTextProvider())
         XCTAssertEqual(job.model, .sol)
@@ -48,11 +48,11 @@ final class ModelSelectionTests: XCTestCase {
         XCTAssertNil(first.selectedModel)
         XCTAssertNil(first.makeTextProvider(), "An unverified model must not create a provider")
         await first.refreshAIConnection()?.value
-        XCTAssertEqual(first.selectedModel, .sol)
+        XCTAssertEqual(first.selectedModel?.id, CodexModel.sol.rawValue)
         let next = AppSettings(defaults: defaults, connectionVerifier: { _, _, effort in calls += 1; return ConnectionFixture.ready(.luna, effort: effort) })
         XCTAssertNil(next.selectedModel)
         await next.refreshAIConnection()?.value
-        XCTAssertEqual(next.selectedModel, .luna)
+        XCTAssertEqual(next.selectedModel?.id, CodexModel.luna.rawValue)
         XCTAssertEqual(calls, 2)
         let offline = AppSettings(defaults: defaults, connectionVerifier: { _, _, _ in throw ProviderConnectionIssue(.network, stage: .account, retry: .manual) })
         await offline.refreshAIConnection()?.value
@@ -82,7 +82,7 @@ final class ModelSelectionTests: XCTestCase {
         await settings.refreshAIConnection()?.value
         pending?.resume(returning: .sol)
         await old?.value
-        XCTAssertEqual(settings.selectedModel, .luna)
+        XCTAssertEqual(settings.selectedModel?.id, CodexModel.luna.rawValue)
         XCTAssertEqual(settings.makeTextProvider()?.identity.model, CodexModel.luna.rawValue)
     }
 

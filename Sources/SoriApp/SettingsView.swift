@@ -3,6 +3,7 @@ import AVFoundation
 import SoriCore
 import SoriSpeech
 import DoongdoongCodex
+import DoongdoongClaude
 
 enum SettingsSection: String, CaseIterable {
     case speech, providers, shortcuts
@@ -28,14 +29,17 @@ struct SettingsView: View {
     @State private var advanced = false
     @State private var providerAdvanced = false
     @State private var codexDraft: String
+    @State private var claudeDraft: String
     @State private var ffmpegDraft: String
     @State private var codexPathError: String?
+    @State private var claudePathError: String?
     @State private var ffmpegPathError: String?
 
     init(store: AppStore, providerDetailsExpanded: Bool = false) {
         self.store = store
         _providerAdvanced = State(initialValue: providerDetailsExpanded)
         _codexDraft = State(initialValue: store.settings.codexPath)
+        _claudeDraft = State(initialValue: store.settings.claudePath)
         _ffmpegDraft = State(initialValue: store.settings.ffmpegPath)
     }
 
@@ -85,6 +89,8 @@ struct SettingsView: View {
                 if !store.settings.preparingSpeech { store.settings.refreshSpeechAvailability() }
             }
             .onChange(of: codexDraft) { _, _ in codexPathError = nil }
+            .onChange(of: claudeDraft) { _, _ in claudePathError = nil }
+            .onChange(of: store.settings.claudePath) { _, value in claudeDraft = value }
             .onChange(of: ffmpegDraft) { _, _ in ffmpegPathError = nil }
             .onChange(of: store.settings.codexPath) { _, value in codexDraft = value }
             .onChange(of: store.settings.ffmpegPath) { _, value in ffmpegDraft = value }
@@ -163,7 +169,7 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     note("오디오·동영상 파일을 변환하는 FFmpeg의 위치입니다.")
                     executableField("FFmpeg", draft: $ffmpegDraft, error: ffmpegPathError,
-                                    saved: settings.ffmpegPath) { applyPath(isCodex: false) }
+                                    saved: settings.ffmpegPath) { applyPath(nil) }
                 }.padding(.top, 16)
             }.font(.system(size: 13)).tint(SoriTheme.secondary)
         }
@@ -198,6 +204,12 @@ struct SettingsView: View {
     private var providers: some View {
         @Bindable var settings = store.settings
         return VStack(alignment: .leading, spacing: 24) {
+            VStack(alignment: .leading, spacing: 10) {
+                AIVendorPicker(settings: settings)
+                if store.processingID != nil {
+                    note("진행 중인 정리는 시작할 때의 AI로 끝까지 처리합니다. 바꾼 AI는 다음 작업부터 사용합니다.")
+                }
+            }
             connection
             VStack(alignment: .leading, spacing: 12) {
                 row("녹음 후 교정·요약", detail: "녹음이 끝나면 전체 내용을 정리합니다.") {
@@ -209,6 +221,59 @@ struct SettingsView: View {
                         .background(SoriTheme.sidebar, in: RoundedRectangle(cornerRadius: 8))
                 }
             }
+            if settings.vendor == .claude { claudeModel } else { codexModel }
+            DisclosureGroup("고급 설정", isExpanded: $providerAdvanced) {
+                VStack(alignment: .leading, spacing: 20) {
+                    row("요청 제한 시간", detail: "한 번의 AI 요청을 기다리는 최대 시간") {
+                        Picker("요청 제한 시간", selection: $settings.requestTimeout) {
+                            ForEach([120.0, 300, 600, 900, 1800], id: \.self) { seconds in Text("\(Int(seconds / 60))분").tag(seconds) }
+                            if ![120.0, 300, 600, 900, 1800].contains(settings.requestTimeout) {
+                                Text("\(Int(settings.requestTimeout))초").tag(settings.requestTimeout)
+                            }
+                        }.labelsHidden().frame(width: 156, alignment: .trailing)
+                    }
+                    rule
+                    if settings.vendor == .claude {
+                        executableField("Claude 실행 파일", draft: $claudeDraft, error: claudePathError,
+                                        saved: settings.claudePath) { applyPath(.claude) }
+                    } else {
+                        executableField("Codex 실행 파일", draft: $codexDraft, error: codexPathError,
+                                        saved: settings.codexPath) { applyPath(.codex) }
+                    }
+                    HStack {
+                        Button("\(settings.vendor.accountName)로 로그인") { settings.signIn { NSWorkspace.shared.open($0) } }
+                            .disabled(!settings.aiInstalled || settings.checkingAI)
+                        Spacer()
+                    }
+                    note(settings.vendor == .claude
+                         ? "Claude Code의 구독 로그인만 사용합니다. API 키와 Console 로그인은 사용하지 않습니다."
+                         : "자동 선택은 Sol을 우선하고, 없으면 Luna를 사용합니다. 설정을 바꾼 뒤 연결을 확인해 주세요.").id("provider-advanced-end")
+                }.padding(.top, 18)
+            }.font(.system(size: 13)).tint(SoriTheme.secondary).id("provider-advanced")
+            note("교정·요약에는 텍스트만 전달되며, \(settings.vendor.accountName) 계정의 이용 한도가 적용됩니다.")
+        }
+    }
+
+    private var claudeModel: some View {
+        @Bindable var settings = store.settings
+        return group("모델") {
+            row("사용할 모델", detail: settings.selectedModel.map { "현재 \($0.displayName) · 새 버전이 나오면 자동으로 사용합니다." }
+                ?? "항상 최신 Sonnet을 사용합니다.") {
+                Text(settings.selectedModel?.displayName ?? ClaudeModel.sonnet.displayName + " · 최신")
+                    .font(.system(size: 13, weight: .medium)).frame(width: 190, alignment: .trailing)
+            }
+            rule
+            row("추론 강도", detail: "높을수록 시간과 사용량이 늘 수 있습니다.") {
+                Picker("추론 강도", selection: $settings.claudeEffort) {
+                    ForEach(ClaudeEffort.allCases, id: \.self) { Text(claudeEffortName($0)).tag($0) }
+                }.labelsHidden().frame(width: 190, alignment: .trailing).disabled(settings.checkingAI)
+            }
+        }
+    }
+
+    private var codexModel: some View {
+        @Bindable var settings = store.settings
+        return VStack(alignment: .leading, spacing: 24) {
             group("모델") {
                 row("사용할 모델", detail: modelDetail) {
                     Picker("사용할 모델", selection: $settings.preferredModelID) {
@@ -229,54 +294,29 @@ struct SettingsView: View {
                     }.labelsHidden().frame(width: 190, alignment: .trailing).disabled(settings.catalog == nil || settings.checkingAI)
                 }
             }
-            DisclosureGroup("고급 설정", isExpanded: $providerAdvanced) {
-                VStack(alignment: .leading, spacing: 20) {
-                    row("요청 제한 시간", detail: "한 번의 AI 요청을 기다리는 최대 시간") {
-                        Picker("요청 제한 시간", selection: $settings.requestTimeout) {
-                            ForEach([120.0, 300, 600, 900, 1800], id: \.self) { seconds in Text("\(Int(seconds / 60))분").tag(seconds) }
-                            if ![120.0, 300, 600, 900, 1800].contains(settings.requestTimeout) {
-                                Text("\(Int(settings.requestTimeout))초").tag(settings.requestTimeout)
-                            }
-                        }.labelsHidden().frame(width: 156, alignment: .trailing)
-                    }
-                    rule
-                    executableField("Codex 실행 파일", draft: $codexDraft, error: codexPathError,
-                                    saved: settings.codexPath) { applyPath(isCodex: true) }
-                    HStack {
-                        Button("ChatGPT로 로그인") { settings.signIn { NSWorkspace.shared.open($0) } }.disabled(!settings.codexReady || settings.checkingAI)
-                        Spacer()
-                    }
-                    note("자동 선택은 Sol을 우선하고, 없으면 Luna를 사용합니다. 설정을 바꾼 뒤 연결을 확인해 주세요.").id("provider-advanced-end")
-                }.padding(.top, 18)
-            }.font(.system(size: 13)).tint(SoriTheme.secondary).id("provider-advanced")
-            note("교정·요약에는 텍스트만 전달되며, ChatGPT 계정의 이용 한도가 적용됩니다.")
         }
     }
 
     private var connection: some View {
         let settings = store.settings
         return VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 12) {
-                if let icon = NSImage(contentsOf: AppResources.directory.appendingPathComponent("codex-icon.png")) {
-                    Image(nsImage: icon).resizable().aspectRatio(contentMode: .fit).frame(width: 42, height: 42)
-                        .clipShape(RoundedRectangle(cornerRadius: 10)).accessibilityHidden(true)
+            // The vendor cards above already show identity and status; this card
+            // only explains what is wrong and offers the next action.
+            if (settings.selectedModel == nil || !settings.aiInstalled) && !settings.checkingAI {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(settings.aiInstalled ? AIConnectionPresentation(state: settings.connectionState, vendor: settings.vendor).title
+                         : "\(settings.vendor.name)를 설치해 주세요")
+                        .font(.system(size: 14, weight: .medium))
+                    note(settings.aiInstalled ? settings.aiConnectionMessage : "\(settings.vendor.name) 실행 파일을 찾지 못했습니다. 설치한 뒤 다시 확인하거나 실행 경로를 지정해 주세요.")
                 }
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Codex").font(.system(size: 16, weight: .semibold))
-                    note("ChatGPT 계정으로 연결")
-                }
-                Spacer()
-                status(connectionBadge, ready: settings.selectedModel != nil, busy: settings.checkingAI)
+                if !settings.aiInstalled { installHint }
+                rule
             }
-            if settings.selectedModel == nil && !settings.checkingAI {
-                note(settings.codexReady ? settings.aiConnectionMessage : "Codex 실행 파일을 찾지 못했습니다. 실행 경로를 확인해 주세요.")
-            }
-            rule
             HStack(spacing: 12) {
-                if !settings.codexReady {
+                if !settings.aiInstalled {
                     Button("실행 경로 설정") { providerAdvanced = true }
                 } else if settings.connectionIssue?.kind == .loginRequired || settings.connectionIssue?.kind == .unsupportedAuthentication {
-                    Button("ChatGPT로 로그인") { settings.signIn { NSWorkspace.shared.open($0) } }
+                    Button("\(settings.vendor.accountName)로 로그인") { settings.signIn { NSWorkspace.shared.open($0) } }
                         .buttonStyle(.borderedProminent).disabled(settings.checkingAI)
                 } else if let date = settings.lastConnectionCheck {
                     Text("마지막 확인 \(date.formatted(date: .omitted, time: .shortened))")
@@ -284,7 +324,7 @@ struct SettingsView: View {
                 }
                 Spacer(minLength: 0)
                 Button(settings.checkingAI ? "확인 중…" : "연결 확인") { settings.refreshAIConnection() }
-                    .disabled(settings.checkingAI || !settings.codexReady)
+                    .disabled(settings.checkingAI || !settings.aiInstalled)
             }
             if settings.checkingAI {
                 HStack(spacing: 8) {
@@ -297,15 +337,13 @@ struct SettingsView: View {
         }.padding(18).background(.white, in: RoundedRectangle(cornerRadius: 12))
             .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(SoriTheme.line))
     }
-    private var connectionBadge: String {
-        if !store.settings.codexReady { return "설정 필요" }
-        switch store.settings.connectionState {
-        case .ready: return "연결됨"
-        case .checking: return "확인 중"
-        case .signingIn: return "로그인 중"
-        case .blocked(let issue): return issue.kind == .loginRequired ? "로그인 필요" : "확인 필요"
-        case .unchecked: return "연결 전"
-        }
+    private var installHint: some View {
+        let command = store.settings.vendor.installationCommand
+        return HStack(spacing: 10) {
+            Text(command).font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
+            Spacer(minLength: 0)
+            Button("복사") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(command, forType: .string) }
+        }.padding(.horizontal, 12).padding(.vertical, 9).background(SoriTheme.sidebar, in: RoundedRectangle(cornerRadius: 8))
     }
     private var modelDetail: String {
         if let model = store.settings.selectedModel { return "현재 \(model.displayName)" }
@@ -382,17 +420,35 @@ struct SettingsView: View {
             if let error { Text(error).font(.system(size: 12)).foregroundStyle(SoriTheme.recording).fixedSize(horizontal: false, vertical: true) }
         }
     }
-    private func applyPath(isCodex: Bool) {
-        let value = ((isCodex ? codexDraft : ffmpegDraft).trimmingCharacters(in: .whitespacesAndNewlines) as NSString).expandingTildeInPath
+    /// `nil` applies the FFmpeg path; a vendor applies that vendor's CLI path.
+    private func applyPath(_ vendor: AIVendor?) {
+        let draft = vendor == .codex ? codexDraft : vendor == .claude ? claudeDraft : ffmpegDraft
+        let value = (draft.trimmingCharacters(in: .whitespacesAndNewlines) as NSString).expandingTildeInPath
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: value, isDirectory: &isDirectory), !isDirectory.boolValue,
               FileManager.default.isExecutableFile(atPath: value) else {
-            if isCodex { codexPathError = "실행할 수 있는 Codex 파일을 선택해 주세요." }
-            else { ffmpegPathError = "실행할 수 있는 FFmpeg 파일을 선택해 주세요." }
+            switch vendor {
+            case .codex: codexPathError = "실행할 수 있는 Codex 파일을 선택해 주세요."
+            case .claude: claudePathError = "실행할 수 있는 Claude 파일을 선택해 주세요."
+            case nil: ffmpegPathError = "실행할 수 있는 FFmpeg 파일을 선택해 주세요."
+            }
             return
         }
-        if isCodex { codexPathError = nil; store.settings.codexPath = value; codexDraft = value }
-        else { ffmpegPathError = nil; store.settings.ffmpegPath = value; ffmpegDraft = value }
+        switch vendor {
+        case .codex: codexPathError = nil; store.settings.codexPath = value; codexDraft = value
+        case .claude: claudePathError = nil; store.settings.claudePath = value; claudeDraft = value
+        case nil: ffmpegPathError = nil; store.settings.ffmpegPath = value; ffmpegDraft = value
+        }
+    }
+
+    private func claudeEffortName(_ effort: ClaudeEffort) -> String {
+        switch effort {
+        case .low: "Low · 빠르게"
+        case .medium: "Medium · 균형"
+        case .high: "High · 깊게"
+        case .xhigh: "Extra high"
+        case .max: "Max"
+        }
     }
 
     private func effortName(_ effort: ReasoningEffort) -> String {

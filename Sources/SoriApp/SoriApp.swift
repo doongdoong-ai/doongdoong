@@ -160,7 +160,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             var size = settings ? (args.contains("--minimum-window") ? SettingsView.minimumSize : SettingsView.defaultSize) : NSSize(width: args.contains("--minimum-window") ? 1000 : 1280, height: args.contains("--minimum-window") ? 670 : 820)
             if settings { self.store.settingsSection = args.contains("--providers-preview") ? .providers : (args.contains("--shortcuts-preview") ? .shortcuts : .speech) }
             var content = settings ? AnyView(SettingsView(store: self.store, providerDetailsExpanded: args.contains("--provider-details-preview"))) : AnyView(ContentView(store: self.store, transcriptVisible: args.contains("--transcript-preview"), searchVisible: search))
-            if args.contains("--connection-preview") { content = AnyView(AIConnectionSetupView(store: self.store)); size = NSSize(width: 480, height: args.contains("--connection-install-preview") ? 410 : 350) }
+            if args.contains("--connection-preview") { content = AnyView(AIConnectionSetupView(store: self.store)); size = NSSize(width: 480, height: args.contains("--connection-install-preview") ? 400 : 330) }
             let view = NSHostingView(rootView: content.frame(width: size.width, height: size.height).environment(\.displayScale, 2).preferredColorScheme(.light).tint(SoriTheme.accent))
             view.appearance = NSAppearance(named: .aqua)
             view.frame = NSRect(origin: .zero, size: size)

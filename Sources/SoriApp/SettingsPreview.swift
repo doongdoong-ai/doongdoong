@@ -15,6 +15,8 @@ import DoongdoongTranscription
         defaults.set("ko", forKey: "language")
         defaults.set(args.contains("--providers-missing-preview") ? "/missing/codex" : "/usr/bin/true", forKey: "codexPath")
         defaults.set("/usr/bin/true", forKey: "ffmpegPath")
+        defaults.set(args.contains("--providers-missing-preview") ? "/missing/claude" : "/usr/bin/true", forKey: "claudePath")
+        defaults.set(args.contains("--providers-claude-preview") ? "claude" : "codex", forKey: "aiVendor")
         defaults.set(!args.contains("--providers-disabled-preview"), forKey: "analysisEnabled")
         return AppSettings(defaults: defaults, connectionVerifier: { _, preferred, effort in
             if args.contains("--sidebar-ai-checking-preview") { try await Task.sleep(for: .seconds(30)) }
@@ -34,6 +36,12 @@ import DoongdoongTranscription
             ])
             let model = try catalog.select(preferred: CodexModel(rawValue: preferred), effort: effort)
             return .init(catalog: catalog, result: .success(.init(provider: "codex", model: model.rawValue, reasoningEffort: effort.rawValue)))
+        }, claudeVerifier: { _, effort in
+            if args.contains("--providers-missing-preview") { throw ProviderConnectionIssue(.installationRequired, stage: .installation) }
+            if args.contains("--providers-login-preview") || args.contains("--connection-login-preview") {
+                throw ProviderConnectionIssue(.loginRequired, stage: .account, retry: .afterUserAction)
+            }
+            return .init(catalog: nil, result: .success(.init(provider: "claude", model: "sonnet", reasoningEffort: effort.rawValue)), modelName: "Sonnet 5.5")
         }, speechAvailabilityResolver: { _ in
             if args.contains("--speech-download-preview") { return .downloadRequired }
             if args.contains("--speech-unavailable-preview") { return .unsupportedLanguage }
