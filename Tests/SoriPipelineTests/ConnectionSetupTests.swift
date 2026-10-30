@@ -57,6 +57,20 @@ final class ConnectionSetupTests: XCTestCase {
         XCTAssertTrue(store.showRecordingDestination)
     }
 
+    @MainActor func testClosingDuringCheckKeepsCheckingInBackground() async throws {
+        let (root, defaults, settings) = try fixture { _, _, effort in ConnectionFixture.ready(.sol, effort: effort) }
+        defer { cleanup(root, defaults) }
+        let store = AppStore(root: root, settings: settings)
+        store.requestRecording()
+        XCTAssertTrue(settings.showConnectionSetup); XCTAssertTrue(settings.checkingAI)
+        store.closeConnectionSetup(); store.connectionSetupDismissed()
+        XCTAssertFalse(settings.showConnectionSetup)
+        XCTAssertTrue(settings.checkingAI, "Closing only hides the sheet")
+        while settings.checkingAI { await Task.yield() }
+        XCTAssertNotNil(settings.selectedModel)
+        XCTAssertFalse(store.showRecordingDestination, "A closed sheet does not start recording on its own")
+    }
+
     @MainActor func testSavedRecordingRemainsUntouchedUntilConnected() async throws {
         let (root, defaults, settings) = try fixture { _, _, _ in throw ProviderConnectionIssue(.unknown, stage: .probe) }
         defer { cleanup(root, defaults) }

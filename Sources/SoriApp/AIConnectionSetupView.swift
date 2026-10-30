@@ -27,6 +27,11 @@ struct AIConnectionSetupView: View {
                         .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
                         .help("연결 진단 정보").accessibilityLabel("연결 진단 정보")
                 }
+                Button { store.closeConnectionSetup() } label: {
+                    Image(systemName: "xmark").font(.system(size: 12, weight: .semibold)).foregroundStyle(SoriTheme.secondary)
+                        .frame(width: 24, height: 24).contentShape(Rectangle())
+                }.buttonStyle(.plain).keyboardShortcut(.cancelAction)
+                    .help("닫기 · 연결 확인은 계속됩니다").accessibilityLabel("닫기")
             }
             AIVendorPicker(settings: settings, compact: true).padding(.top, 20)
             Text(presentation.title).font(.system(size: 23, weight: .semibold)).tracking(-0.5)
