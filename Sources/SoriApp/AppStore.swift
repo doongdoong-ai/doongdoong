@@ -233,6 +233,11 @@ final class AppStore {
         continueAfterConnectionDismissal = true
         settings.dismissConnectionSetup()
     }
+    /// Closing only hides the sheet; a running check finishes in the background.
+    func closeConnectionSetup() {
+        connectionIntent = nil; continueAfterConnectionDismissal = false
+        settings.showConnectionSetup = false
+    }
     func connectionSetupDismissed() {
         let intent = connectionIntent
         connectionIntent = nil
